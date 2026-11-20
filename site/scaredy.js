@@ -11,7 +11,7 @@
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
   var ICE = [{ urls: "stun:stun.cloudflare.com:3478" }, { urls: "stun:stun.l.google.com:19302" }];
-  var DC_CHUNK = 64 * 1024, RELAY_CHUNK = 1024 * 1024, CONNECT_TIMEOUT = 25000, STALL = 15000;
+  var DC_CHUNK = 64 * 1024, RELAY_CHUNK = 1024 * 1024, CONNECT_TIMEOUT = 25000, FALLBACK_AFTER = 12000, STALL = 15000;
   var T_LIST = 1, T_DATA = 2, T_DONE = 3;
   var ART = { ghost: "/img/scaredy-ghost.png", peeking: "/img/scaredy-peeking.png", shy: "/img/scaredy-shy.png", sweat: "/img/scaredy-sweat.png",
               relieved: "/img/scaredy-relieved.png", thumbs: "/img/scaredy-thumbs.png", sad: "/img/scaredy-sad.png", eek: "/img/scaredy-eek.png" };
@@ -184,7 +184,7 @@
 
   /* =====================================================================  SENDER  */
   function sender() {
-    var files = [], nextId = 1, key = null, keyB64 = "", room = null, token = null, mode = "direct", poll = null, people = {}, count = 0, wakeLock = null, sharing = false, hiddenAt = 0, over = false;
+    var files = [], nextId = 1, key = null, keyB64 = "", room = null, token = null, mode = "direct", fallback = true, poll = null, people = {}, count = 0, wakeLock = null, sharing = false, hiddenAt = 0, over = false;
     var title = document.title, sess = null, keepable = true, lastTouch = 0, keeping = {}, notKept = {};
     var SS = "scaredy-share";
     function err(m) { $("err").textContent = m || ""; $("err").hidden = !m; }
@@ -195,7 +195,7 @@
     function saveSess() {
       if (!sess) return;
       sess.nextId = nextId;
-      if (sharing) { sess.room = room; sess.token = token; sess.key = keyB64; sess.mode = mode; } else { delete sess.room; delete sess.token; delete sess.key; delete sess.mode; }
+      if (sharing) { sess.room = room; sess.token = token; sess.key = keyB64; sess.mode = mode; sess.fallback = fallback; } else { delete sess.room; delete sess.token; delete sess.key; delete sess.mode; delete sess.fallback; }
       try { sessionStorage.setItem(SS, JSON.stringify(sess)); } catch (e) { /* private mode: no refresh safety */ }
     }
     try { sess = JSON.parse(sessionStorage.getItem(SS) || "null"); } catch (e) { sess = null; }
@@ -255,14 +255,27 @@
       ["dragleave", "drop"].forEach(function (t) { $(zone).addEventListener(t, function () { $(zone).classList.remove("over"); }); });
     });
 
+    /* "Make a private link" with no files: scroll back up to the file picker (it's off screen on phones) and nudge it (v4) */
+    function nudgePick() {
+      err("Pick at least one file first.");
+      var d = $("drop"), still = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+      $("drop-sub").textContent = "Pick a file first, then make your link.";
+      window.scrollTo({ top: Math.max(0, d.getBoundingClientRect().top + window.pageYOffset - 90), behavior: still ? "auto" : "smooth" });
+      d.classList.remove("nudge"); void d.offsetWidth; d.classList.add("nudge");
+      setTimeout(function () { d.classList.remove("nudge"); }, 1200);
+    }
+    function syncFallback() { var v = (document.querySelector('input[name="mode"]:checked') || {}).value; $("fallback-row").hidden = v === "relay"; }
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="mode"]'), function (r) { r.addEventListener("change", syncFallback); });
+    syncFallback();
     $("start").addEventListener("click", function () {
-      if (!files.length) { err("Pick at least one file first."); return; }
+      if (!files.length) { nudgePick(); return; }
       if (!window.crypto || !crypto.subtle || !window.RTCPeerConnection) { err("This browser can't do it. Try an up-to-date Chrome, Firefox, Edge or Safari."); return; }
       var v = (document.querySelector('input[name="mode"]:checked') || {}).value; mode = v === "relay" || v === "short" ? v : "direct";
+      fallback = mode !== "relay" && $("fallback").checked;
       $("start").disabled = true; err("");
       var raw = crypto.getRandomValues(new Uint8Array(16));
       keyB64 = b64u(raw);
-      importKey(raw).then(function (k) { key = k; return api("POST", "rooms", mode === "short" ? { mode: mode, key: keyB64 } : { mode: mode }); }).then(function (d) {
+      importKey(raw).then(function (k) { key = k; return api("POST", "rooms", mode === "short" ? { mode: mode, key: keyB64, fallback: fallback } : { mode: mode, fallback: fallback }); }).then(function (d) {
         room = d.room; token = d.token; openShare();
       }).catch(function (e) { $("start").disabled = false; err(e.message); });
     });
@@ -272,7 +285,7 @@
       $("link").value = link;
       $("mode-line").textContent = mode === "relay" ? "Encrypted relay: taking the encrypted shortcut. Still never stored." :
         mode === "short" ? "Short link: easy to type or say. The key passes through our server while you connect (never saved)." :
-        "Direct: straight between your browsers. If their network blocks it, they'll be told.";
+        (fallback ? "Direct: straight between your browsers. If someone's network blocks it, they switch to the encrypted relay by themselves." : "Direct: straight between your browsers. If someone's network blocks it, you can switch them to the encrypted relay.");
       try { dropQR.draw($("qr"), link); } catch (e) { /* QR is optional */ }
       strip("share-strip", null, mode === "relay");
       $("send").hidden = true; $("why").hidden = true; $("compare").hidden = true; $("share").hidden = false; window.scrollTo(0, 0);
@@ -295,7 +308,7 @@
       $("start").disabled = true; $("drop-sub").textContent = "Coming back to your link…";
       (function resume() {
         api("POST", s.room + "/resume", { token: s.token }).then(function (d) {
-          room = s.room; token = s.token; mode = d.mode || s.mode; keyB64 = s.key;
+          room = s.room; token = s.token; mode = d.mode || s.mode; keyB64 = s.key; fallback = s.fallback !== false && mode !== "relay";
           return Promise.all([importKey(unb64u(keyB64)), filesBack]).then(function (r) { key = r[0]; $("start").disabled = false; openShare(); });
         }).catch(function (e) {
           if (!e.status && ++tries < 5) { setTimeout(resume, 2000); return; }       // offline for a moment: try again
@@ -313,10 +326,11 @@
       $("what").textContent = files.length ? plural(files.length, "file", "files") + " · " + size(total()) : "No files right now. Add some, or anyone opening the link will see an empty list.";
       Object.keys(people).forEach(function (pid) { sendList(pid); });
     }
+    function viaRelay(p) { return mode === "relay" || !!(p && p.relay); }
     function listPayload() { return enc.encode(JSON.stringify({ files: files.map(function (f) { return { id: f.id, name: f.file.name, size: f.file.size, type: f.file.type || "application/octet-stream" }; }) })); }
     function sendList(pid) {
       var p = people[pid]; if (!p || p.stopped) return;
-      seal(key, T_LIST, listPayload()).then(function (b) { if (mode === "relay") return relayPut(pid, b); if (p.dc && p.dc.readyState === "open") p.dc.send(b); }).catch(function () {});
+      seal(key, T_LIST, listPayload()).then(function (b) { if (viaRelay(p)) return relayPut(pid, b); if (p.dc && p.dc.readyState === "open") p.dc.send(b); }).catch(function () {});
     }
 
     function keepAwake() {
@@ -371,15 +385,16 @@
       var list = Object.keys(people).map(function (k) { return people[k]; });
       if (list.some(function (p) { return p.busy; })) { mood("share-img", "share-cat", "sweat", "wobble"); $("share-title").textContent = "Tiptoeing across…"; $("share-tag").textContent = "Try not to blink. Keep this page open."; return; }
       if (list.some(function (p) { return p.got > 0; })) { mood("share-img", "share-cat", "relieved"); $("share-title").textContent = "Made it. Nothing left behind."; $("share-tag").textContent = "Keep the page open if anyone still needs something, or add more files."; setTimeout(function () { if (/Made it/.test($("share-title").textContent)) mood("share-img", "share-cat", "thumbs"); }, 2500); return; }
-      if (list.length && list.every(function (p) { return /Couldn't/.test(p.status); })) { mood("share-img", "share-cat", "eek"); $("share-title").textContent = "Eek."; $("share-tag").textContent = "Their network wouldn't let us sneak through."; return; }
+      if (list.length && list.every(function (p) { return p.blocked; })) { mood("share-img", "share-cat", "eek"); $("share-title").textContent = "Eek."; $("share-tag").textContent = "Their network wouldn't let us sneak through."; return; }
       if (list.length) { mood("share-img", "share-cat", "peeking"); $("share-title").textContent = "Oh! Someone's at the other end."; $("share-tag").textContent = "Keep this page open."; return; }
       mood("share-img", "share-cat", "shy");
     }
     function personRow(pid) {
       var p = people[pid];
       if (!p.el) { $("nobody").hidden = true; p.el = document.createElement("li"); $("people").appendChild(p.el); }
-      p.el.innerHTML = "<b>Person " + p.n + '</b><span class="st"></span>' + (p.busy ? '<div class="pbar"><i></i></div>' : "");
+      p.el.innerHTML = "<b>Person " + p.n + '</b><span class="st"></span>' + (p.busy ? '<div class="pbar"><i></i></div>' : "") + (p.blocked && !over ? '<button type="button" class="btn small-btn">Send through the encrypted relay instead</button>' : "");
       p.el.querySelector(".st").textContent = p.status;
+      if (p.blocked && !over) p.el.querySelector("button").addEventListener("click", function () { toRelay(pid); });
       if (p.busy) p.el.querySelector(".pbar i").style.width = Math.round(p.frac * 100) + "%";   // set in script: the page's CSP allows no inline style attributes
     }
     function setStatus(pid, status) { var p = people[pid]; if (!p) return; p.status = status; personRow(pid); overallMood(); }
@@ -390,15 +405,18 @@
       if (Date.now() - lastTouch > 30000) { lastTouch = Date.now(); Keep.touch(sess.sid); }   // "this tab is still here"
       (d.msgs || []).forEach(function (m) {
         if (m.type === "join") {
-          count += 1; people[m.peer] = { n: count, n2: 0, epoch: m.epoch || 0, got: 0, queue: [], busy: false, frac: 0, status: "Connecting…" }; personRow(m.peer); overallMood();
-          if (mode === "relay") { sendList(m.peer); setStatus(m.peer, "Connected through the relay. Looking at your files…"); } else directOffer(m.peer);
+          var old = people[m.peer];
+          if (old && old.pc) try { old.pc.close(); } catch (e) { /* ignore */ }
+          if (!old) count += 1;
+          people[m.peer] = { n: old ? old.n : count, el: old && old.el, n2: 0, epoch: m.epoch || 0, relay: m.via === "relay", got: old ? old.got : 0, queue: [], busy: false, frac: 0, status: "Connecting…" }; personRow(m.peer); overallMood();
+          if (viaRelay(people[m.peer])) { sendList(m.peer); setStatus(m.peer, mode === "relay" ? "Connected through the relay. Looking at your files…" : "Connected through the encrypted relay (their network blocked Direct). Looking at your files…"); } else directOffer(m.peer);
           return;
         }
         var p = people[m.from]; if (!p || !m.data) return;
         var x = m.data;
         if (x.type === "answer" && p.pc) p.pc.setRemoteDescription(x.sdp).then(function () { (p.ice || []).forEach(function (c) { p.pc.addIceCandidate(c).catch(function () {}); }); p.ice = []; }).catch(function () {});
         else if (x.type === "ice" && p.pc && x.c) { if (p.pc.remoteDescription) p.pc.addIceCandidate(x.c).catch(function () {}); else (p.ice = p.ice || []).push(x.c); }
-        else if (x.type === "get" && mode === "relay") want(m.from, x.ids);
+        else if (x.type === "get" && viaRelay(p)) want(m.from, x.ids);
         else if (x.type === "got") gotOne(m.from);
         else if (x.type === "bye") { p.stopped = true; p.busy = false; setStatus(m.from, (gotLine(p) + " They left.").trim()); }
       });
@@ -420,13 +438,13 @@
       var id = p.queue.shift(); if (id == null) return;
       var f = fileById(id); if (!f) { pump(pid); return; }          // removed meanwhile: skip it
       p.sending = true; p.busy = true;
-      var send = mode === "relay" ? relaySendFile : directSendFile;
+      var send = viaRelay(p) ? relaySendFile : directSendFile;
       send(pid, f).then(function () { p.sending = false; pump(pid); }).catch(function (e) { p.sending = false; p.busy = false; if (!p.stopped) setStatus(pid, e.status === 410 ? "They left." : e.message || "Something went wrong."); });
     }
     function progress(pid, f, sent) {
       var p = people[pid]; p.frac = f.file.size ? sent / f.file.size : 1;
       if (!p.tick || Date.now() - p.tick > 250 || sent >= f.file.size) { p.tick = Date.now(); setStatus(pid, "Tiptoeing across… " + f.file.name + " · " + Math.round(p.frac * 100) + "%"); }
-      strip("share-strip", p.frac, mode === "relay");
+      strip("share-strip", p.frac, viaRelay(p));
     }
 
     /* ---- direct (and short link): one WebRTC connection per person ---- */
@@ -434,8 +452,14 @@
       var p = people[pid], pc = new RTCPeerConnection({ iceServers: ICE }); p.pc = pc;
       var dc = pc.createDataChannel("files", { ordered: true }); dc.binaryType = "arraybuffer"; dc.bufferedAmountLowThreshold = 1024 * 1024; p.dc = dc;
       pc.onicecandidate = function (e) { if (e.candidate) signal(pid, { type: "ice", c: e.candidate.toJSON() }).catch(function () {}); };
-      var timer = setTimeout(function () { if (dc.readyState !== "open") fail(); }, CONNECT_TIMEOUT);
-      function fail() { if (p.stopped) return; p.stopped = true; setStatus(pid, "Couldn't sneak through their network. Make a new link with Encrypted relay."); try { pc.close(); } catch (e) { /* ignore */ } }
+      var timer = setTimeout(function () { if (dc.readyState !== "open") fail(); }, fallback ? FALLBACK_AFTER : CONNECT_TIMEOUT);
+      function fail() {
+        if (p.stopped || p.relay || people[pid] !== p) return; clearTimeout(timer);
+        if (fallback) { toRelay(pid); return; }
+        p.stopped = true; p.blocked = true; drop(); setStatus(pid, "Couldn't sneak through their network.");
+      }
+      function drop() { dc.onclose = null; pc.onconnectionstatechange = null; try { pc.close(); } catch (e) { /* ignore */ } }
+      p.dropDirect = drop;
       pc.onconnectionstatechange = function () { if (pc.connectionState === "failed") fail(); };
       dc.onopen = function () { clearTimeout(timer); setStatus(pid, "Connected. Looking at your files…"); sendList(pid); };
       dc.onmessage = function (e) {
@@ -445,6 +469,16 @@
       };
       dc.onclose = function () { if (!p.stopped) { p.stopped = true; p.busy = false; setStatus(pid, (gotLine(p) + " The connection closed.").trim()); } };
       pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () { return signal(pid, { type: "offer", sdp: pc.localDescription.toJSON() }); }).catch(fail);
+    }
+    /* Direct couldn't get through for this person: carry on with the same link through the encrypted relay, just for them (v4) */
+    function toRelay(pid) {
+      var p = people[pid]; if (!p || p.relay || over) return;
+      if (p.dropDirect) p.dropDirect();
+      p.relay = true; p.stopped = false; p.blocked = false; p.n2 = 0; p.chain = null; p.dc = null; p.pc = null;
+      setStatus(pid, "Their network blocked Direct, so switching them to the encrypted relay…");
+      signal(pid, { type: "relay" }).then(function () {
+        sendList(pid); setStatus(pid, "Connected through the encrypted relay (their network blocked Direct). Looking at your files…");
+      }).catch(function (e) { if (people[pid] === p) { p.stopped = true; setStatus(pid, e.status === 410 ? "They left." : "Couldn't switch them to the relay. They can open the link again."); } });
     }
     function directSendFile(pid, f) {
       var p = people[pid], dc = p.dc, off = 0, idb = u32(f.id);
@@ -493,7 +527,7 @@
     $("send").hidden = true; $("recv").hidden = false; $("why").hidden = true; $("compare").hidden = true;
     var key = null, me = null, token = null, mode = null, poll = null, pc = null, dc = null, ended = false, pendingIce = [], lastGot = 0, stallTimer = null;
     var list = [], items = {}, current = null, wanted = [], saved = 0;   // items[id] = {meta, parts, got, state, url}
-    var epoch = 0, relayGen = 0, resumeIds = [], everOpen = false;      // v3: the sender's page can reload and come back
+    var epoch = 0, relayGen = 0, resumeIds = [], everOpen = false, canFallback = false;      // v3: the sender's page can reload and come back
     function status(t) { $("r-status").textContent = t; }
     function hint(t) { $("r-hint").textContent = t || ""; $("r-hint").hidden = !t; }
     function stopAll() { if (poll) poll.stop(); if (pc) try { pc.close(); } catch (e) { /* ignore */ } clearInterval(stallTimer); }
@@ -608,7 +642,7 @@
     function badKey() { ended = true; stopAll(); mood("recv-img", "recv-cat", "eek"); $("recv-title").textContent = "That key doesn't fit."; status("This link's key doesn't match. Check you copied the whole link, including the part after the #."); $("r-file").hidden = true; }
 
     api("POST", room + "/join", {}).then(function (d) {
-      me = d.peer; token = d.token; mode = d.mode;
+      me = d.peer; token = d.token; mode = d.mode; canFallback = !!d.fallback;
       var k = keyB64 || d.key; if (!k) throw Object.assign(new Error("This link is missing its key."), { code: "nokey" });
       return importKey(unb64u(k));
     }).then(function (k) {
@@ -616,15 +650,28 @@
       status(mode === "relay" ? "Taking the encrypted shortcut to the sender…" : "Tiptoeing over to the sender's browser…");
       poll = poller(room, token, onSignal, gone);
       if (mode === "relay") relayGet(0, relayGen);
-      else setTimeout(function () {
-        if ($("r-file").hidden && !ended && (!dc || dc.readyState !== "open")) { stopAll(); ended = true; mood("recv-img", "recv-cat", "eek"); $("recv-title").textContent = "Eek."; status("Couldn't sneak through. Your network or the sender's blocks direct connections. Ask them to make a new link with Encrypted relay."); }
-      }, CONNECT_TIMEOUT);
+      else setTimeout(blockedMsg, CONNECT_TIMEOUT + (canFallback ? 15000 : 0));
     }).catch(function (e) { if (e.code === "gone" || e.status === 404) gone(); else if (e.code === "nokey") badKey(); else status(e.message); });
 
+    /* Direct didn't connect: keep listening, because the sender's page can switch us to the relay without a new link (v4) */
+    function blockedMsg() {
+      if (!$("r-file").hidden || ended || mode === "relay" || (dc && dc.readyState === "open")) return;
+      mood("recv-img", "recv-cat", "eek"); $("recv-title").textContent = "Eek.";
+      status(canFallback ? "Direct is blocked here. Switching to the encrypted relay…" : "Couldn't sneak through. Your network or the sender's blocks direct connections. Ask the sender to tap \u201cSend through the encrypted relay instead\u201d on their page. Keep this page open.");
+    }
+    function toRelay() {
+      if (mode === "relay" || ended) return;
+      mode = "relay";
+      if (pc) { var old = pc; pc = null; dc = null; try { old.close(); } catch (x) { /* ignore */ } }
+      if ($("r-file").hidden) { mood("recv-img", "recv-cat", "ghost"); $("recv-title").textContent = "Taking the encrypted shortcut."; }
+      status("Direct was blocked, so this comes through the encrypted relay instead. Still locked, never stored.");
+      relayGen += 1; relayGet(0, relayGen);
+    }
     function onSignal(d) {
       (d.msgs || []).forEach(function (m) {
         var x = m.data || {};
-        if (x.type === "again") senderBack(x.epoch);
+        if (x.type === "relay") toRelay();
+        else if (x.type === "again") senderBack(x.epoch);
         else if (x.type === "offer") answer(x.sdp);
         else if (x.type === "ice" && x.c) { if (pc && pc.remoteDescription) pc.addIceCandidate(x.c).catch(function () {}); else pendingIce.push(x.c); }
       });
@@ -633,7 +680,7 @@
       if (pc) { var stale = pc; pc = null; try { stale.close(); } catch (x) { /* ignore */ } }
       var mine = pc = new RTCPeerConnection({ iceServers: ICE });
       pc.onicecandidate = function (e) { if (e.candidate) api("POST", room + "/send", { token: token, to: "sender", data: { type: "ice", c: e.candidate.toJSON() } }).catch(function () {}); };
-      pc.onconnectionstatechange = function () { if (pc === mine && !everOpen && mine.connectionState === "failed" && !ended) { mood("recv-img", "recv-cat", "eek"); status("Couldn't sneak through. Ask the sender to make a new link with Encrypted relay."); } };
+      pc.onconnectionstatechange = function () { if (pc === mine && !everOpen && mine.connectionState === "failed" && !ended) blockedMsg(); };
       pc.ondatachannel = function (e) {
         if (pc !== mine) return;
         var ch = dc = e.channel; dc.binaryType = "arraybuffer";
@@ -646,7 +693,7 @@
       pc.setRemoteDescription(sdp).then(function () { pendingIce.forEach(function (c) { pc.addIceCandidate(c).catch(function () {}); }); pendingIce = []; return pc.createAnswer(); })
         .then(function (a) { return pc.setLocalDescription(a); })
         .then(function () { return api("POST", room + "/send", { token: token, to: "sender", data: { type: "answer", sdp: pc.localDescription.toJSON() } }); })
-        .catch(function () { status("Couldn't sneak through. Ask the sender to make a new link with Encrypted relay."); });
+        .catch(function () { if (pc === mine) blockedMsg(); });
     }
     function relayGet(n, gen) {
       if (ended || gen !== relayGen) return;

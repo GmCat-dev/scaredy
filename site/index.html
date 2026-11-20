@@ -64,6 +64,9 @@
           <small>A short link like scaredy.gmcat.io/k7m2-x9pq that's easy to type or say. Files still go straight between your browsers.</small>
           <span class="pc"><span class="pro">+ Easy to share, even out loud</span><span class="con">− The secret key passes through our server while you connect (never saved), so you trust us a little more</span><span class="con">− Same network limits as Direct, and you can see each other's IP</span></span></span></label>
       </fieldset>
+      <label class="fallback" id="fallback-row"><input type="checkbox" id="fallback" checked>
+        <span><b>If their network blocks Direct, switch them to the encrypted relay by itself.</b>
+        <small>Common on mobile data. Still locked so we can't read it, and never saved.</small></span></label>
       <p class="err" id="err" role="alert" hidden></p>
       <button type="button" class="btn go" id="start">Make a private link</button>
       <p class="trust">No account. No ads. No tracking. Close this page and the link disappears.</p>
@@ -174,9 +177,9 @@
   </section>
   <section class="card faq">
     <h2>Questions</h2>
-    <details><summary>Is it really never stored?</summary><p>Yes. In Direct mode the file goes from your browser to theirs and our server only helps the two browsers find each other. In Encrypted relay mode, locked pieces pass through our relay and are handed over and forgotten one by one. Nothing is written to disk.</p></details>
+    <details><summary>Is it really never stored?</summary><p>Yes. In Direct mode the file goes from your browser to theirs and our server only helps the two browsers find each other. In Encrypted relay mode (or when Direct is blocked and that person is switched to the relay), locked pieces pass through our relay and are handed over and forgotten one by one. Nothing is written to disk.</p></details>
     <details><summary>Can you see my file?</summary><p>With Direct and Encrypted relay, no: it's encrypted in your browser with a key that lives in the part of the link after "#", which browsers never send to any server, ours included. With Short link the key passes through our server while the browsers connect. We never save it and the file still goes straight between you, but if you want zero trust in us, use Direct or Encrypted relay.</p></details>
-    <details><summary>Why didn't it connect?</summary><p>Some networks (offices, schools, some mobile carriers) block direct browser-to-browser connections. Make a new link with Encrypted relay; it works on any network.</p></details>
+    <details><summary>Why didn't it connect?</summary><p>Some networks (offices, schools, some mobile carriers) block direct browser-to-browser connections. With Direct or Short link, Scaredy switches that person to the encrypted relay by itself (unless you untick that), so you don't need a new link. If you untick it, a button on your page still lets you switch them.</p></details>
     <details><summary>Can I send to several people?</summary><p>Yes. Send the same link to each of them. Each person gets their own copy while your page is open, and you can watch each one's progress.</p></details>
     <details><summary>Can I send several files, or add one later?</summary><p>Yes. Pick as many as you like. While the link is ready you can add more files or remove some, and anyone with the link sees the list change straight away.</p></details>
     <details><summary>Which option should I pick?</summary><p>Direct is the most private. If it can't connect, or you'd rather not show your internet address, use Encrypted relay. Pick Short link when you need a link that's easy to type or say out loud; the trade-off is that the secret key passes through our server while you connect.</p></details>

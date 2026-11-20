@@ -9,11 +9,15 @@ can pick the same link back up) or stops checking in (about 30 seconds).
 The file is encrypted in the sender's browser with a key that is only in the part of the link after "#", which browsers
 never send to a server, so we can't read it either way (relay or direct).
 
-  POST /api/rooms                     {mode: "direct"|"relay"|"short", key (short only)} -> {room, token}
+  POST /api/rooms                     {mode: "direct"|"relay"|"short", key (short only), fallback} -> {room, token}
+                                      fallback (direct/short): if one person's network blocks the direct connection,
+                                      the sender's page switches just that person to the relay by itself (v4)
                                       "short" = a short link with no key in it: the key is kept in memory only while the
                                       room lives and handed to receivers when they join (the file still goes directly).
   POST /api/<room>/join               -> {peer, token, mode}            (a receiver opened the link)
   POST /api/<room>/send               {token, to: "sender"|<peer>, data}  a small signalling message
+                                      data {type: "relay"} from the sender = this person now gets pieces through the
+                                      relay (Direct couldn't get through for them; v4, 2026-11-20)
   GET  /api/<room>/poll?token=        waits up to 20 s for messages -> {msgs}
   POST /api/<room>/close              {token}  the sender stopped sharing (at once)
                                       {token, soon: true}  the sender's page is unloading (refresh or close): the room
@@ -104,6 +108,7 @@ def handle(h, method, parts):
             return h.error(400, "Bad request.") or True
         mode = d.get("mode") if d.get("mode") in ("relay", "short") else "direct"
         key = d.get("key") if mode == "short" else None
+        fallback = bool(d.get("fallback")) and mode != "relay"
         if mode == "short" and not (isinstance(key, str) and re.match(r"^[A-Za-z0-9_-]{16,64}$", key)):
             h.error(400, "Bad request.")
             return True
@@ -122,7 +127,7 @@ def handle(h, method, parts):
             token = secrets.token_urlsafe(24)
             ROOMS[rid] = {"id": rid, "mode": mode, "sender_token": _h(token), "sender_seen": t, "created": t, "visitor": v,
                           "closed": False, "sender_q": [], "peers": {}, "relay_bytes": 0, "key": key,
-                          "leaving": 0, "sender_gen": 0}
+                          "leaving": 0, "sender_gen": 0, "fallback": fallback}
             STATS["rooms"] += 1
         h.send_json(201, {"room": rid, "token": token, "mode": mode})
         return True
@@ -158,7 +163,7 @@ def handle(h, method, parts):
             room["peers"][pid] = {"token": _h(token), "seen": t, "q": [], "relay": {}, "relay_next": 0, "epoch": 0}
             room["sender_q"].append({"type": "join", "peer": pid})
             LOCK.notify_all()
-        out = {"peer": pid, "token": token, "mode": room["mode"]}
+        out = {"peer": pid, "token": token, "mode": room["mode"], "fallback": room.get("fallback", False)}
         if room["mode"] == "short":
             out["key"] = room["key"]        # short links carry no key; it lives only in this room's memory
         h.send_json(200, out)
@@ -193,7 +198,8 @@ def handle(h, method, parts):
                     peer["epoch"] += 1
                     peer["relay"] = {}
                     peer["q"].append({"from": "sender", "data": {"type": "again", "epoch": peer["epoch"]}})
-                room["sender_q"] = [{"type": "join", "peer": pid, "epoch": room["peers"][pid]["epoch"]} for pid in sorted(room["peers"])]
+                room["sender_q"] = [{"type": "join", "peer": pid, "epoch": room["peers"][pid]["epoch"],
+                                     "via": room["peers"][pid].get("via", "")} for pid in sorted(room["peers"])]
                 LOCK.notify_all()
                 h.send_json(200, {"ok": True, "mode": room["mode"]})
                 return True
@@ -206,6 +212,8 @@ def handle(h, method, parts):
                 h.error(403, "Not allowed.")
                 return True
             box = _queue(room, to)
+            if who == "sender" and isinstance(d.get("data"), dict) and d["data"].get("type") == "relay":
+                room["peers"][to]["via"] = "relay"       # Direct was blocked for this person: the relay may carry theirs
             if len(box) >= MAX_QUEUE:
                 h.error(429, "Slow down.")
                 return True
@@ -251,7 +259,7 @@ def handle(h, method, parts):
 
     if action == "relay" and len(parts) == 6 and PEER_RE.match(parts[4]) and parts[5].isdigit():
         pid, n = parts[4], int(parts[5])
-        if room["mode"] != "relay":
+        if room["mode"] != "relay" and (room["peers"].get(pid) or {}).get("via") != "relay":
             h.error(400, "This link doesn't use the relay.")
             return True
         if method == "POST":

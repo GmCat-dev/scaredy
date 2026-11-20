@@ -88,6 +88,27 @@ class Scaredy(unittest.TestCase):
         self.call("POST", "/api/%s/close" % r["room"], {"token": r["token"]})                      # Stop sharing
         st, d = self.call("POST", "/api/%s/join" % r["room"], {}); self.assertEqual((st, d.get("code")), (404, "gone"))
 
+    def test_direct_falls_back_to_relay_for_one_person(self):
+        r = self.room("direct", fallback=True)
+        _, j = self.call("POST", "/api/%s/join" % r["room"], {}); self.assertTrue(j["fallback"])
+        _, k = self.call("POST", "/api/%s/join" % r["room"], {})
+        hdr = {"X-Scaredy-Token": r["token"], "Content-Type": "application/octet-stream"}
+        path = "/api/%s/relay/%s/0" % (r["room"], j["peer"])
+        st, _ = self.call("POST", path, raw=b"x", headers=hdr); self.assertEqual(st, 400)            # not switched yet
+        st, _ = self.call("POST", "/api/%s/send" % r["room"], {"token": j["token"], "to": j["peer"], "data": {"type": "relay"}})
+        self.assertEqual(st, 403)                                                                    # only the sender switches
+        st, _ = self.call("POST", "/api/%s/send" % r["room"], {"token": r["token"], "to": j["peer"], "data": {"type": "relay"}})
+        self.assertEqual(st, 200)
+        st, d = self.call("GET", "/api/%s/poll?token=%s" % (r["room"], j["token"])); self.assertEqual(d["msgs"][0]["data"], {"type": "relay"})
+        st, _ = self.call("POST", path, raw=b"locked", headers=hdr); self.assertEqual(st, 200)
+        st, body = self.call("GET", path + "?token=" + j["token"]); self.assertEqual((st, body), (200, b"locked"))
+        st, _ = self.call("POST", "/api/%s/relay/%s/0" % (r["room"], k["peer"]), raw=b"x", headers=hdr); self.assertEqual(st, 400)  # others stay direct
+        # a refresh remembers who uses the relay
+        self.call("POST", "/api/%s/close" % r["room"], {"token": r["token"], "soon": True})
+        self.call("POST", "/api/%s/resume" % r["room"], {"token": r["token"]})
+        st, d = self.call("GET", "/api/%s/poll?token=%s" % (r["room"], r["token"]))
+        self.assertEqual({m["peer"]: m["via"] for m in d["msgs"]}, {j["peer"]: "relay", k["peer"]: ""})
+
     def test_other_sites_cannot_post(self):
         st, _ = self.call("POST", "/api/rooms", {"mode": "direct"}, headers={"Origin": "https://evil.example"}); self.assertEqual(st, 403)
 

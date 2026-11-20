@@ -83,6 +83,14 @@ button.cat { cursor: pointer; }
 .mode input { margin-top: 5px; accent-color: var(--orange); }
 .mode em { color: var(--muted); font-size: 14px; font-style: italic; font-weight: 400; }
 .mode small { display: block; font-size: 15px; margin-top: 2px; }
+.fallback { display: flex; gap: 10px; align-items: flex-start; margin: 12px 2px 0; cursor: pointer; font-size: 15px; }
+.fallback input { margin-top: 4px; accent-color: var(--orange); }
+.fallback small { display: block; color: var(--muted); font-size: 14px; }
+.fallback[hidden] { display: none; }
+#people .small-btn { margin-top: 8px; }
+.drop.nudge { animation: nudge .5s ease 2; border-color: var(--orange); background: color-mix(in srgb, var(--orange) 10%, transparent); }
+@keyframes nudge { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+@media (prefers-reduced-motion: reduce) { .drop.nudge { animation: none; } }
 .pc { display: grid; gap: 1px; margin-top: 6px; font-size: 14px; }
 .pro { color: var(--green); } .con { color: var(--muted); }
 
