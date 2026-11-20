@@ -41,6 +41,8 @@ PAY_KEY_FILE = os.environ.get("SCAREDY_PAY_KEY_FILE", "/etc/gmcat-scaredy/pay-ke
 TIP_AMOUNTS = (1, 3, 5, 10)
 TIPS, TIPS_PER_10_MIN = {}, 6              # per visitor: a checkout link is free to make, but not endless
 POSTS_PER_MINUTE = 240                  # signalling + relay pieces are many small requests; this only stops floods
+RELAY_PIECES_PER_MINUTE = 3000          # relay pieces (1 MB each) count separately (v6): ~50 MB/s; the relay's own caps
+                                        # (8-piece window, 6 GB per link, 200 GB a day) bound them anyway
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8",
          ".webmanifest": "application/manifest+json", ".json": "application/json", ".xml": "application/xml"}
@@ -96,8 +98,12 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         return [p for p in path.split("/") if p]
 
-    def too_many(self):
+    def too_many(self, relay=False):
         v, t = self.visitor(), time.time()
+        if relay:
+            v, limit = "r" + v, RELAY_PIECES_PER_MINUTE
+        else:
+            limit = POSTS_PER_MINUTE
         with HITS_LOCK:
             recent = [x for x in HITS.get(v, []) if x > t - 60]
             recent.append(t)
@@ -105,7 +111,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(HITS) > 20000:
                 for k in [k for k, xs in HITS.items() if not xs or xs[-1] < t - 60]:
                     del HITS[k]
-        return len(recent) > POSTS_PER_MINUTE
+        return len(recent) > limit
 
     def do_GET(self):
         parts = self.parts()
@@ -125,9 +131,10 @@ class Handler(BaseHTTPRequestHandler):
         if origin and origin not in ORIGINS:
             self.drain()
             return self.error(403, "Not allowed from that site.")
-        if self.too_many():
+        relay = len(parts) == 5 and parts[0] == "api" and parts[2] == "relay"     # /api/<room>/relay/<peer>/<n>
+        if self.too_many(relay):
             self.drain()
-            return self.error(429, "Too many requests. Please slow down.")
+            return self.send_json(429, {"error": "Too many requests. Please slow down.", "code": "slow"})   # the page waits and retries
         if parts == ["api", "tip"]:
             return self.tip()
         if parts[:1] == ["api"] and rooms.handle(self, "POST", parts):

@@ -266,14 +266,14 @@
       d.classList.remove("nudge"); void d.offsetWidth; d.classList.add("nudge");
       setTimeout(function () { d.classList.remove("nudge"); }, 1200);
     }
-    function syncFallback() { var v = (document.querySelector('input[name="mode"]:checked') || {}).value; $("fallback-row").hidden = v === "relay"; }
+    function syncFallback() { var v = (document.querySelector('input[name="mode"]:checked') || {}).value; $("fallback-row").hidden = v === "relay" || v === "short"; }   // Short link: never by itself (v6: our server holds its key)
     Array.prototype.forEach.call(document.querySelectorAll('input[name="mode"]'), function (r) { r.addEventListener("change", syncFallback); });
     syncFallback();
     $("start").addEventListener("click", function () {
       if (!files.length) { nudgePick(); return; }
       if (!window.crypto || !crypto.subtle || !window.RTCPeerConnection) { err("This browser can't do it. Try an up-to-date Chrome, Firefox, Edge or Safari."); return; }
       var v = (document.querySelector('input[name="mode"]:checked') || {}).value; mode = v === "relay" || v === "short" ? v : "direct";
-      fallback = mode !== "relay" && $("fallback").checked;
+      fallback = mode === "direct" && $("fallback").checked;
       $("start").disabled = true; err("");
       var raw = crypto.getRandomValues(new Uint8Array(16));
       keyB64 = b64u(raw);
@@ -286,7 +286,7 @@
       var link = mode === "short" ? location.origin + "/" + room.slice(0, 4) + "-" + room.slice(4) : location.origin + "/#" + room + "." + keyB64;
       $("link").value = link;
       $("mode-line").textContent = mode === "relay" ? "Encrypted relay: taking the encrypted shortcut. Still never stored." :
-        mode === "short" ? "Short link: easy to type or say. The key passes through our server while you connect (never saved)." :
+        mode === "short" ? "Short link: easy to type or say. The key passes through our server while you connect (never saved). If someone's network blocks it, you can choose to send theirs through our relay." :
         (fallback ? "Direct: straight between your browsers. If someone's network blocks it, they switch to the encrypted relay by themselves." : "Direct: straight between your browsers. If someone's network blocks it, you can switch them to the encrypted relay.");
       try { dropQR.draw($("qr"), link); } catch (e) { /* QR is optional */ }
       strip("share-strip", null, mode === "relay");
@@ -310,7 +310,7 @@
       $("start").disabled = true; $("drop-sub").textContent = "Coming back to your link…";
       (function resume() {
         api("POST", s.room + "/resume", { token: s.token }).then(function (d) {
-          room = s.room; token = s.token; mode = d.mode || s.mode; keyB64 = s.key; fallback = s.fallback !== false && mode !== "relay";
+          room = s.room; token = s.token; mode = d.mode || s.mode; keyB64 = s.key; fallback = s.fallback !== false && mode === "direct";
           return Promise.all([importKey(unb64u(keyB64)), filesBack]).then(function (r) { key = r[0]; $("start").disabled = false; openShare(); });
         }).catch(function (e) {
           if (!e.status && ++tries < 5) { setTimeout(resume, 2000); return; }       // offline for a moment: try again
@@ -396,9 +396,13 @@
     function personRow(pid) {
       var p = people[pid];
       if (!p.el) { $("nobody").hidden = true; p.el = document.createElement("li"); $("people").appendChild(p.el); }
-      p.el.innerHTML = "<b>Person " + p.n + '</b><span class="st"></span>' + (p.busy ? '<div class="pbar"><i></i></div>' : "") + (p.blocked && !over ? '<button type="button" class="btn small-btn">Send through the encrypted relay instead</button>' : "");
+      p.el.innerHTML = "<b>Person " + p.n + '</b><span class="st"></span>' + (p.busy ? '<div class="pbar"><i></i></div>' : "") + (p.blocked && !over ? '<button type="button" class="btn small-btn">Send through the relay instead</button>' : "");
       p.el.querySelector(".st").textContent = p.status;
-      if (p.blocked && !over) p.el.querySelector("button").addEventListener("click", function () { toRelay(pid); });
+      if (p.blocked && !over) p.el.querySelector("button").addEventListener("click", function () {
+        if (mode !== "short") { toRelay(pid); return; }
+        // Short link: our server already holds this link's key, so the relay asks for a little more trust. Say so first (v6).
+        ask("Use the relay for this Short link?", "Their network blocks Direct. Through our relay the file stays locked, but with a Short link our server also holds the key while you share, so in theory we could open it. We never save or look at either. For zero trust in us, stop and make a new link with Direct or Encrypted relay instead.", "Use the relay").then(function (yes) { if (yes) toRelay(pid); });
+      });
       if (p.busy) p.el.querySelector(".pbar i").style.width = Math.round(p.frac * 100) + "%";   // set in script: the page's CSP allows no inline style attributes
     }
     function setStatus(pid, status) { var p = people[pid]; if (!p) return; p.status = status; personRow(pid); overallMood(); }
@@ -503,14 +507,28 @@
     /* ---- relay: every piece for a person goes in order (n = 0, 1, 2…): lists, file pieces, "done" marks ---- */
     function relayPut(pid, body) {
       var p = people[pid]; if (!p) return Promise.reject(new Error("gone"));
-      p.chain = (p.chain || Promise.resolve()).catch(function () {}).then(function () { var n = p.n2++; return put(n); });
+      // v6: a piece that fails on the way (dropped connection, busy server) is sent again with the SAME number, so the
+      // receiver never waits for a number that was skipped. If it still can't get through, this person's relay stops.
+      p.chain = (p.chain || Promise.resolve()).catch(function () {}).then(function () {
+        if (p.relayBroken) throw p.relayBroken;
+        var n = p.n2++; return put(n, 0).catch(function (e) { p.relayBroken = e; throw e; });
+      });
       return p.chain;
-      function put(n) {
+      function retry(n, tries, e) {
+        if (tries >= 8 || p.stopped) throw e;
+        return wait(Math.min(8000, 500 * Math.pow(2, tries))).then(function () { return put(n, tries + 1); });
+      }
+      function put(n, tries) {
         return fetch("/api/" + room + "/relay/" + pid + "/" + n, { method: "POST", headers: { "X-Scaredy-Token": token, "X-Scaredy-Epoch": String(p.epoch || 0), "Content-Type": "application/octet-stream" }, body: body })
           .then(function (r) {
-            if (r.status === 429) return r.json().catch(function () { return {}; }).then(function (d) { if (d.code === "window") return wait(250).then(function () { return put(n); }); var e = new Error(d.error || "Too busy"); e.status = 429; throw e; });
-            if (!r.ok) return r.json().catch(function () { return {}; }).then(function (d) { var e = new Error(d.error || "Relay error"); e.status = r.status; throw e; });
-          });
+            if (r.ok) return;
+            return r.json().catch(function () { return {}; }).then(function (d) {
+              if (r.status === 429 && d.code === "window") return wait(250).then(function () { return put(n, tries); });   // their window is full: not an error
+              var e = new Error(d.error || "Relay error"); e.status = r.status;
+              if (r.status === 429 || r.status >= 500) return retry(n, tries, e);   // busy or restarting: same piece again
+              throw e;
+            });
+          }, function () { return retry(n, tries, new Error("The connection dropped while sending. They can open the link again.")); });
       }
     }
     function relaySendFile(pid, f) {
@@ -662,7 +680,7 @@
     function blockedMsg() {
       if (!$("r-file").hidden || ended || mode === "relay" || (dc && dc.readyState === "open")) return;
       mood("recv-img", "recv-cat", "eek"); $("recv-title").textContent = "Eek.";
-      status(canFallback ? "Direct is blocked here. Switching to the encrypted relay…" : "Couldn't sneak through. Your network or the sender's blocks direct connections. Ask the sender to tap \u201cSend through the encrypted relay instead\u201d on their page. Keep this page open.");
+      status(canFallback ? "Direct is blocked here. Switching to the encrypted relay…" : "Couldn't sneak through. Your network or the sender's blocks direct connections. Ask the sender to tap \u201cSend through the relay instead\u201d next to you on their page. Keep this page open.");
     }
     function toRelay() {
       if (mode === "relay" || ended) return;

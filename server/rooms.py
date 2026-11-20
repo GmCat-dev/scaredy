@@ -140,7 +140,7 @@ def handle(h, method, parts):
             return h.error(400, "Bad request.") or True
         mode = d.get("mode") if d.get("mode") in ("relay", "short") else "direct"
         key = d.get("key") if mode == "short" else None
-        fallback = bool(d.get("fallback")) and mode != "relay"
+        fallback = bool(d.get("fallback")) and mode == "direct"   # v6: never for Short links (the server holds their key)
         if mode == "short" and not (isinstance(key, str) and re.match(r"^[A-Za-z0-9_-]{16,64}$", key)):
             h.error(400, "Bad request.")
             return True

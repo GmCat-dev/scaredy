@@ -290,3 +290,8 @@ body.dragging .drop:not([hidden]) { background: color-mix(in srgb, var(--lav) 14
 @media (max-width: 560px) { .tipbtn { font-size: 13px; padding: 5px 10px; margin-right: 6px; } }
 .topnav a, .tipbtn { white-space: nowrap; }
 @media (max-width: 560px) { .tip-long { display: none; } }
+
+/* v6: file inputs stay reachable by keyboard (visually hidden, not display:none) and their drop zone shows focus */
+.vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; opacity: 0; }
+.drop { position: relative; }
+.drop:has(.vh:focus-visible) { outline: 3px solid var(--orange); outline-offset: 3px; }

@@ -130,6 +130,22 @@ class Scaredy(unittest.TestCase):
         time.sleep(34)                    # background sweeps only, no requests (other tests' rooms also time out by now)
         st, d = self.call("GET", "/api/health"); self.assertEqual(d["rooms"], 0)
 
+    def test_short_links_never_fall_back_by_themselves(self):
+        r = self.room("short", key="B" * 22, fallback=True); _, j = self.call("POST", "/api/%s/join" % r["room"], {})
+        self.assertFalse(j["fallback"])
+
+    def test_big_relay_transfer_is_not_cut_off_by_the_flood_limit(self):
+        # ChatGPT's review: 238 x 1 MB pieces in under a minute hit the general 240/min limit and the transfer died
+        r = self.room("relay"); _, j = self.call("POST", "/api/%s/join" % r["room"], {})
+        hdr = {"X-Scaredy-Token": r["token"], "Content-Type": "application/octet-stream"}
+        data = bytes(1024 * 1024)
+        for n in range(300):
+            st, _ = self.call("POST", "/api/%s/relay/%s/%d" % (r["room"], j["peer"], n), raw=data, headers=hdr)
+            self.assertEqual(st, 200, "piece %d" % n)
+            st, body = self.call("GET", "/api/%s/relay/%s/%d?token=%s" % (r["room"], j["peer"], n, j["token"]))
+            self.assertEqual(len(body), len(data))
+        self.call("POST", "/api/%s/close" % r["room"], {"token": r["token"]})
+
     def test_other_sites_cannot_post(self):
         st, _ = self.call("POST", "/api/rooms", {"mode": "direct"}, headers={"Origin": "https://evil.example"}); self.assertEqual(st, 403)
 

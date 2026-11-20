@@ -44,7 +44,7 @@
         <img src="/img/scaredy-peeking.png" alt="" width="72" height="72">
         <span class="drop-main" id="drop-main"><b>Pick files</b> or drop them here</span>
         <span class="drop-sub" id="drop-sub">They stay right here until someone opens the link.</span>
-        <input type="file" id="file" multiple hidden>
+        <input type="file" id="file" class="vh" multiple>
       </label>
       <ul class="flist" id="pick-list" hidden></ul>
       <p class="small kept" id="kept-pick" hidden></p>
@@ -80,7 +80,7 @@
         <li><b>On a phone, keep the screen on and stay on this page.</b> Phones pause pages in the background, which stops the transfer. A computer works best for sending.</li>
         <li><b>They must download while you're online.</b> It's not "send now, grab it later". Agree on a time, or send the link when you're both around.</li>
         <li><b>If the connection drops partway, they start again.</b> Nothing is kept halfway, anywhere.</li>
-        <li><b>Refreshing is fine.</b> Your files and your link come back by themselves, and anyone receiving picks up again. Closing the page is different: the link vanishes, and the copy this browser kept of your files is wiped the next time you open Scaredy GmCat (your own files on your device aren't touched).</li>
+        <li><b>Refreshing is fine.</b> Your files and your link come back by themselves, and anyone receiving picks up again. Closing the page is different: the link vanishes, and the copy this browser kept of your files is wiped automatically the next time Scaredy GmCat is opened in this browser, once at least half an hour has passed (your own files on your device aren't touched).</li>
         <li><b>Very big files</b> (several GB) may be too much for the other person's browser, especially on a phone.</li>
         <li><b>The secret is in the link.</b> Your file is locked with a key that's part of the link itself (the bit after the "#"). Browsers never send that part to any server, so not even our relay can open your file. It also means anyone with the whole link can get the file while you're sharing, so send it only to the person it's for. (A Short link has no room for the key, so it passes through our server while you connect; we never save it.)</li>
       </ul>
@@ -100,9 +100,9 @@
       <p class="small" id="mode-line"></p>
       <details class="qr"><summary>Show a QR code</summary><canvas id="qr" width="220" height="220"></canvas></details>
       <div id="share-strip"><div class="strip" aria-hidden="true"><span class="sw sw-a"></span><span class="path"><span class="trail"></span><span class="lock">🔒</span><span class="mover">📄</span></span><span class="sw sw-b"></span></div></div>
-      <h2 class="people-h">Files</h2><input type="file" id="add-file" multiple hidden>
+      <h2 class="people-h">Files</h2>
       <ul class="flist" id="share-list"></ul>
-      <label class="drop drop-add" id="drop-add" for="add-file"><span class="drop-main"><b>Add more files</b> or drop them here</span><span class="drop-sub">Anyone with the link sees them straight away.</span></label>
+      <label class="drop drop-add" id="drop-add" for="add-file"><span class="drop-main"><b>Add more files</b> or drop them here</span><span class="drop-sub">Anyone with the link sees them straight away.</span><input type="file" id="add-file" class="vh" multiple></label>
       <p class="small" id="what"></p>
       <p class="small kept" id="kept-share" hidden></p>
       <h2 class="people-h">People</h2>
@@ -179,7 +179,7 @@
     <h2>Questions</h2>
     <details><summary>Is it really never stored?</summary><p>Yes. In Direct mode the file goes from your browser to theirs and our server only helps the two browsers find each other. In Encrypted relay mode (or when Direct is blocked and that person is switched to the relay), locked pieces pass through our relay and are handed over and forgotten one by one. Nothing is written to disk.</p></details>
     <details><summary>Can you see my file?</summary><p>With Direct and Encrypted relay, no: it's encrypted in your browser with a key that lives in the part of the link after "#", which browsers never send to any server, ours included. With Short link the key passes through our server while the browsers connect. We never save it and the file still goes straight between you, but if you want zero trust in us, use Direct or Encrypted relay.</p></details>
-    <details><summary>Why didn't it connect?</summary><p>Some networks (offices, schools, some mobile carriers) block direct browser-to-browser connections. With Direct or Short link, Scaredy switches that person to the encrypted relay by itself (unless you untick that), so you don't need a new link. If you untick it, a button on your page still lets you switch them.</p></details>
+    <details><summary>Why didn't it connect?</summary><p>Some networks (offices, schools, some mobile carriers) block direct browser-to-browser connections. With Direct, Scaredy switches that person to the encrypted relay by itself (unless you untick that), so you don't need a new link. With a Short link it never switches by itself: our server holds a Short link's key, so a button lets you choose to use the relay for that person, knowing you're trusting us a little more.</p></details>
     <details><summary>Can I send to several people?</summary><p>Yes. Send the same link to each of them. Each person gets their own copy while your page is open, and you can watch each one's progress.</p></details>
     <details><summary>Can I send several files, or add one later?</summary><p>Yes. Pick as many as you like. While the link is ready you can add more files or remove some, and anyone with the link sees the list change straight away.</p></details>
     <details><summary>Which option should I pick?</summary><p>Direct is the most private. If it can't connect, or you'd rather not show your internet address, use Encrypted relay. Pick Short link when you need a link that's easy to type or say out loud; the trade-off is that the secret key passes through our server while you connect.</p></details>
@@ -208,6 +208,6 @@
 <dialog class="ask" id="ask"><h3 id="ask-title"></h3><p id="ask-text"></p><div class="ask-acts"><button type="button" class="btn ghost-btn" id="ask-no">Cancel</button><button type="button" class="btn go" id="ask-yes">OK</button></div></dialog>
 <script src="/qrcode.js?v=BUILD" defer></script>
 <script src="/scaredy.js?v=BUILD" defer></script>
-<script src="/insights.js" data-site="scaredy" defer></script>
+<script src="/insights.js" data-site="scaredy" data-hide-path="^/[2-9a-hjkmnp-z]{4}-?[2-9a-hjkmnp-z]{4}/?$" defer></script>
 </body>
 </html>

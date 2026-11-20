@@ -20,9 +20,11 @@
   var campaign = params.get('utm_campaign') || null;
   var firstView = true;
   var hashRoutes = !!(script && script.dataset.hashRoutes === 'true');
+  var hidePath = script && script.dataset.hidePath ? new RegExp(script.dataset.hidePath) : null;   // Scaredy: Short link codes are secrets
   function currentPath() {
     var h = location.hash.replace(/^#\/?/, '');
-    return hashRoutes && /^[\w-]+$/.test(h) ? '/' + h : location.pathname;
+    var p = hashRoutes && /^[\w-]+$/.test(h) ? '/' + h : location.pathname;
+    return hidePath && hidePath.test(p) ? '/' : p;
   }
 
   function send(event, meta, path) {
