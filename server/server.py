@@ -41,7 +41,8 @@ PAY_KEY_FILE = os.environ.get("SCAREDY_PAY_KEY_FILE", "/etc/gmcat-scaredy/pay-ke
 TIP_AMOUNTS = (1, 3, 5, 10)
 TIPS, TIPS_PER_10_MIN = {}, 6              # per visitor: a checkout link is free to make, but not endless
 POSTS_PER_MINUTE = 240                  # signalling + relay pieces are many small requests; this only stops floods
-RELAY_PIECES_PER_MINUTE = 3000          # relay pieces (1 MB each) count separately (v6): ~50 MB/s; the relay's own caps
+RELAY_PIECES_PER_MINUTE = int(os.environ.get("SCAREDY_RELAY_PER_MINUTE", "3000"))   # tests set it low;
+                                                 # relay pieces (1 MB each) count separately (v6): ~50 MB/s; the relay's own caps
                                         # (8-piece window, 6 GB per link, 200 GB a day) bound them anyway
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8",
@@ -81,9 +82,11 @@ class Handler(BaseHTTPRequestHandler):
                 break
             n -= len(chunk)
 
-    def send_json(self, code, data):
+    def send_json(self, code, data, headers=None):
         body = json.dumps(data).encode()
         self.send_response(code)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
@@ -111,6 +114,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(HITS) > 20000:
                 for k in [k for k, xs in HITS.items() if not xs or xs[-1] < t - 60]:
                     del HITS[k]
+        self.retry_after = max(1, int(recent[0] + 61 - t)) if len(recent) > limit else 0   # until the oldest counted request ages out
         return len(recent) > limit
 
     def do_GET(self):
@@ -134,7 +138,8 @@ class Handler(BaseHTTPRequestHandler):
         relay = len(parts) == 5 and parts[0] == "api" and parts[2] == "relay"     # /api/<room>/relay/<peer>/<n>
         if self.too_many(relay):
             self.drain()
-            return self.send_json(429, {"error": "Too many requests. Please slow down.", "code": "slow"})   # the page waits and retries
+            return self.send_json(429, {"error": "Too many requests. Please slow down.", "code": "slow", "retry": self.retry_after},
+                                  {"Retry-After": str(self.retry_after)})   # the page waits that long and retries the same piece
         if parts == ["api", "tip"]:
             return self.tip()
         if parts[:1] == ["api"] and rooms.handle(self, "POST", parts):

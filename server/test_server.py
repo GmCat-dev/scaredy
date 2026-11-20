@@ -150,5 +150,41 @@ class Scaredy(unittest.TestCase):
         st, _ = self.call("POST", "/api/rooms", {"mode": "direct"}, headers={"Origin": "https://evil.example"}); self.assertEqual(st, 403)
 
 
+class BusyRelay(unittest.TestCase):
+    """v7: when relay pieces hit their per-minute limit, the answer says how long to wait (ChatGPT's second review)."""
+    @classmethod
+    def setUpClass(cls):
+        cls.port = free_port(); cls.base = "http://127.0.0.1:%d" % cls.port
+        env = dict(os.environ, SCAREDY_PORT=str(cls.port), SCAREDY_ORIGINS=cls.base, SCAREDY_RELAY_PER_MINUTE="20")
+        cls.proc = subprocess.Popen([sys.executable, SERVER], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(cls.base + "/api/health", timeout=1); break
+            except OSError:
+                time.sleep(0.1)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate(); cls.proc.wait(5)
+
+    call = Scaredy.call
+    room = Scaredy.room
+
+    def test_busy_answer_says_how_long_to_wait(self):
+        r = self.room("relay"); _, j = self.call("POST", "/api/%s/join" % r["room"], {})
+        hdr = {"X-Scaredy-Token": r["token"], "Content-Type": "application/octet-stream"}
+        for n in range(20):
+            self.call("POST", "/api/%s/relay/%s/%d" % (r["room"], j["peer"], n % 8), raw=b"x", headers=hdr)
+        req = urllib.request.Request(self.base + "/api/%s/relay/%s/0" % (r["room"], j["peer"]), data=b"x", method="POST",
+                                     headers=dict(hdr, Origin=self.base))
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=10)
+        e = cm.exception; d = json.loads(e.read())
+        self.assertEqual((e.code, d["code"]), (429, "slow"))
+        self.assertTrue(1 <= d["retry"] <= 61 and e.headers.get("Retry-After") == str(d["retry"]))
+        st, _ = self.call("POST", "/api/%s/send" % r["room"], {"token": r["token"], "to": j["peer"], "data": {"type": "x"}})
+        self.assertEqual(st, 200)                       # signalling has its own limit: still works
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

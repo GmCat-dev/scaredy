@@ -446,8 +446,16 @@
       var id = p.queue.shift(); if (id == null) return;
       var f = fileById(id); if (!f) { pump(pid); return; }          // removed meanwhile: skip it
       p.sending = true; p.busy = true;
-      var send = viaRelay(p) ? relaySendFile : directSendFile;
-      send(pid, f).then(function () { p.sending = false; pump(pid); }).catch(function (e) { p.sending = false; p.busy = false; if (!p.stopped) setStatus(pid, e.status === 410 ? "They left." : e.message || "Something went wrong."); });
+      var g = p.gen || 0, send = viaRelay(p) ? relaySendFile : directSendFile;
+      send(pid, f).then(function () { if ((p.gen || 0) !== g) return; p.sending = false; pump(pid); }).catch(function (e) {
+        if ((p.gen || 0) !== g) return;                              // switched to the relay meanwhile: the receiver asks again (v7)
+        p.sending = false; p.busy = false;
+        if (p.relayBroken) {                                         // gave up on the relay: tell them, so they aren't left waiting (v7)
+          p.stopped = true; signal(pid, { type: "failed" }).catch(function () {});
+          setStatus(pid, (gotLine(p) + " The connection kept failing, so this transfer stopped. They can open the link again to retry.").trim()); return;
+        }
+        if (!p.stopped) setStatus(pid, e.status === 410 ? "They left." : e.message || "Something went wrong.");
+      });
     }
     function progress(pid, f, sent) {
       var p = people[pid]; p.frac = f.file.size ? sent / f.file.size : 1;
@@ -475,7 +483,12 @@
         var m; try { m = JSON.parse(e.data); } catch (x) { return; }
         if (m.type === "get") want(pid, m.ids); else if (m.type === "got") gotOne(pid);
       };
-      dc.onclose = function () { if (!p.stopped) { p.stopped = true; p.busy = false; setStatus(pid, (gotLine(p) + " The connection closed.").trim()); } };
+      dc.onclose = function () {
+        if (p.stopped || p.relay || people[pid] !== p) return;
+        clearTimeout(timer); drop();
+        if (fallback && !over) { toRelay(pid); return; }              // dropped partway: carry on over the relay (v7)
+        p.stopped = true; p.busy = false; p.blocked = !over; setStatus(pid, (gotLine(p) + " The direct connection dropped.").trim());
+      };
       pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () { return signal(pid, { type: "offer", sdp: pc.localDescription.toJSON() }); }).catch(fail);
     }
     /* Direct couldn't get through for this person: carry on with the same link through the encrypted relay, just for them (v4) */
@@ -483,6 +496,7 @@
       var p = people[pid]; if (!p || p.relay || over) return;
       if (p.dropDirect) p.dropDirect();
       p.relay = true; p.stopped = false; p.blocked = false; p.n2 = 0; p.chain = null; p.dc = null; p.pc = null;
+      p.gen = (p.gen || 0) + 1; p.sending = false; p.busy = false; p.queue = []; p.frac = 0;   // a half-sent file restarts over the relay (v7)
       setStatus(pid, "Their network blocked Direct, so switching them to the encrypted relay…");
       signal(pid, { type: "relay" }).then(function () {
         sendList(pid); setStatus(pid, "Connected through the encrypted relay (their network blocked Direct). Looking at your files…");
@@ -514,18 +528,25 @@
         var n = p.n2++; return put(n, 0).catch(function (e) { p.relayBroken = e; throw e; });
       });
       return p.chain;
+      var busySince = 0;
       function retry(n, tries, e) {
         if (tries >= 8 || p.stopped) throw e;
         return wait(Math.min(8000, 500 * Math.pow(2, tries))).then(function () { return put(n, tries + 1); });
       }
+      function busy(n, tries, d, e) {                                // v7: wait as long as the server says, for up to 5 minutes
+        if (!busySince) busySince = Date.now();
+        if (p.stopped || Date.now() - busySince > 5 * 60000) throw e;
+        return wait(Math.max(1, Math.min(60, +d.retry || 5)) * 1000 + Math.random() * 500).then(function () { return put(n, tries); });
+      }
       function put(n, tries) {
         return fetch("/api/" + room + "/relay/" + pid + "/" + n, { method: "POST", headers: { "X-Scaredy-Token": token, "X-Scaredy-Epoch": String(p.epoch || 0), "Content-Type": "application/octet-stream" }, body: body })
           .then(function (r) {
-            if (r.ok) return;
+            if (r.ok) { busySince = 0; return; }
             return r.json().catch(function () { return {}; }).then(function (d) {
               if (r.status === 429 && d.code === "window") return wait(250).then(function () { return put(n, tries); });   // their window is full: not an error
               var e = new Error(d.error || "Relay error"); e.status = r.status;
-              if (r.status === 429 || r.status >= 500) return retry(n, tries, e);   // busy or restarting: same piece again
+              if (r.status === 429 && d.code === "slow") return busy(n, tries, d, e);   // busy: wait as long as the server says
+              if (r.status === 429 || r.status >= 500) return retry(n, tries, e);   // restarting or similar: same piece again
               throw e;
             });
           }, function () { return retry(n, tries, new Error("The connection dropped while sending. They can open the link again.")); });
@@ -686,14 +707,24 @@
       if (mode === "relay" || ended) return;
       mode = "relay";
       if (pc) { var old = pc; pc = null; dc = null; try { old.close(); } catch (x) { /* ignore */ } }
+      resetPartial();                                                 // a half-received file starts again over the relay (v7)
       if ($("r-file").hidden) { mood("recv-img", "recv-cat", "ghost"); $("recv-title").textContent = "Taking the encrypted shortcut."; }
       status("Direct was blocked, so this comes through the encrypted relay instead. Still locked, never stored.");
+      if (resumeIds.length) hint("The connection changed partway, so the file in progress starts again.");
       relayGen += 1; relayGet(0, relayGen);
+    }
+    function senderGaveUp() {
+      if (ended) return; ended = true; stopAll(); hint("");
+      Object.keys(items).forEach(function (k) { var it = items[k]; if (it.state !== "done") { it.state = "new"; it.parts = []; it.got = 0; } });
+      wanted = []; current = null; $("r-pct").textContent = ""; drawList(true);
+      mood("recv-img", "recv-cat", "sad"); $("recv-title").textContent = "The transfer stopped.";
+      status("The connection kept failing, so the sender's page stopped sending." + (saved ? " The files you already saved are safe." : "") + " Open the link again to retry.");
     }
     function onSignal(d) {
       (d.msgs || []).forEach(function (m) {
         var x = m.data || {};
         if (x.type === "relay") toRelay();
+        else if (x.type === "failed") senderGaveUp();
         else if (x.type === "again") senderBack(x.epoch);
         else if (x.type === "offer") answer(x.sdp);
         else if (x.type === "ice" && x.c) { if (pc && pc.remoteDescription) pc.addIceCandidate(x.c).catch(function () {}); else pendingIce.push(x.c); }
