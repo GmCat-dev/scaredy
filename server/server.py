@@ -109,13 +109,16 @@ class Handler(BaseHTTPRequestHandler):
             limit = POSTS_PER_MINUTE
         with HITS_LOCK:
             recent = [x for x in HITS.get(v, []) if x > t - 60]
-            recent.append(t)
+            over = len(recent) >= limit
+            if not over:
+                recent.append(t)                 # v8: refused requests don't count, so waiting as told is enough
             HITS[v] = recent
             if len(HITS) > 20000:
                 for k in [k for k, xs in HITS.items() if not xs or xs[-1] < t - 60]:
                     del HITS[k]
-        self.retry_after = max(1, int(recent[0] + 61 - t)) if len(recent) > limit else 0   # until the oldest counted request ages out
-        return len(recent) > limit
+        # wait until enough counted requests age out to leave room for one more
+        self.retry_after = max(1, int(recent[len(recent) - limit] + 60 - t) + 1) if over else 0
+        return over
 
     def do_GET(self):
         parts = self.parts()

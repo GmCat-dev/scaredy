@@ -184,6 +184,20 @@ class BusyRelay(unittest.TestCase):
         self.assertTrue(1 <= d["retry"] <= 61 and e.headers.get("Retry-After") == str(d["retry"]))
         st, _ = self.call("POST", "/api/%s/send" % r["room"], {"token": r["token"], "to": j["peer"], "data": {"type": "x"}})
         self.assertEqual(st, 200)                       # signalling has its own limit: still works
+        # v8 (ChatGPT's third review): refused tries don't count, so waiting exactly as told is enough
+        stop = threading.Event()
+        def sender_page():                                                         # the sender's page keeps checking in
+            while not stop.is_set():
+                self.call("GET", "/api/%s/poll?token=%s" % (r["room"], r["token"]))
+        threading.Thread(target=sender_page, daemon=True).start(); self.addCleanup(stop.set)
+        for _ in range(5):
+            try:
+                urllib.request.urlopen(urllib.request.Request(req.full_url, data=b"x", method="POST", headers=dict(hdr, Origin=self.base)), timeout=10)
+            except urllib.error.HTTPError as e2:
+                wait_for = json.loads(e2.read())["retry"]
+        time.sleep(wait_for)
+        st, d = self.call("POST", "/api/%s/relay/%s/0" % (r["room"], j["peer"]), raw=b"x", headers=hdr)
+        self.assertNotEqual((st, d.get("code") if isinstance(d, dict) else None), (429, "slow"))   # past the limit (200, or "window" if their 8 slots are full)
 
 
 if __name__ == "__main__":

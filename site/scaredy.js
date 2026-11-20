@@ -334,7 +334,8 @@
     function listPayload() { return enc.encode(JSON.stringify({ files: files.map(function (f) { return { id: f.id, name: f.file.name, size: f.file.size, type: f.file.type || "application/octet-stream" }; }) })); }
     function sendList(pid) {
       var p = people[pid]; if (!p || p.stopped) return;
-      seal(key, T_LIST, listPayload()).then(function (b) { if (viaRelay(p)) return relayPut(pid, b); if (p.dc && p.dc.readyState === "open") p.dc.send(b); }).catch(function () {});
+      seal(key, T_LIST, listPayload()).then(function (b) { if (viaRelay(p)) return relayPut(pid, b); if (p.dc && p.dc.readyState === "open") p.dc.send(b); })
+        .catch(function () { if (p.relayBroken) relayGaveUp(pid); });   // even the file list couldn't get through: tell them (v8)
     }
 
     function keepAwake() {
@@ -450,12 +451,15 @@
       send(pid, f).then(function () { if ((p.gen || 0) !== g) return; p.sending = false; pump(pid); }).catch(function (e) {
         if ((p.gen || 0) !== g) return;                              // switched to the relay meanwhile: the receiver asks again (v7)
         p.sending = false; p.busy = false;
-        if (p.relayBroken) {                                         // gave up on the relay: tell them, so they aren't left waiting (v7)
-          p.stopped = true; signal(pid, { type: "failed" }).catch(function () {});
-          setStatus(pid, (gotLine(p) + " The connection kept failing, so this transfer stopped. They can open the link again to retry.").trim()); return;
-        }
+        if (p.relayBroken) { relayGaveUp(pid); return; }            // gave up on the relay: tell them, so they aren't left waiting (v7)
         if (!p.stopped) setStatus(pid, e.status === 410 ? "They left." : e.message || "Something went wrong.");
       });
+    }
+    function relayGaveUp(pid) {
+      var p = people[pid]; if (!p || p.toldFailed) return;
+      p.toldFailed = true; p.stopped = true; p.busy = false; p.sending = false;
+      signal(pid, { type: "failed" }).catch(function () {});
+      setStatus(pid, (gotLine(p) + " The connection kept failing, so this transfer stopped. They can open the link again to retry.").trim());
     }
     function progress(pid, f, sent) {
       var p = people[pid]; p.frac = f.file.size ? sent / f.file.size : 1;
@@ -628,7 +632,8 @@
     function senderBack(e) {
       resetPartial();
       if (pc) { var old = pc; pc = null; dc = null; try { old.close(); } catch (x) { /* ignore */ } }
-      if (mode === "relay") { epoch = e || 0; relayGen += 1; relayGet(0, relayGen); }
+      epoch = e || 0;                                                 // always: a later switch to the relay needs it too (v8)
+      if (mode === "relay") { relayGen += 1; relayGet(0, relayGen); }
       hint(resumeIds.length ? "The sender's page reloaded. Picking up where you left off…" : "The sender's page reloaded. Reconnecting…");
     }
     function onList(obj) {
