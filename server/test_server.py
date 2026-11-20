@@ -5,6 +5,7 @@ is handed over once and then forgotten, a short link hands its key to people who
 resume) keeps the link, and a stop closes it at once. Claude, 2026-11-20."""
 import json
 import os
+import threading
 import socket
 import subprocess
 import sys
@@ -25,7 +26,7 @@ class Scaredy(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.port = free_port(); cls.base = "http://127.0.0.1:%d" % cls.port
-        env = dict(os.environ, SCAREDY_PORT=str(cls.port), SCAREDY_ORIGINS=cls.base)
+        env = dict(os.environ, SCAREDY_PORT=str(cls.port), SCAREDY_ORIGINS=cls.base, SCAREDY_CLEAN_EVERY="2")
         cls.proc = subprocess.Popen([sys.executable, SERVER], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(50):
             try:
@@ -71,8 +72,17 @@ class Scaredy(unittest.TestCase):
         st, _ = self.call("POST", path, raw=b"locked-bytes", headers={"X-Scaredy-Token": r["token"], "Content-Type": "application/octet-stream"})
         self.assertEqual(st, 200)
         st, body = self.call("GET", path + "?token=" + j["token"]); self.assertEqual((st, body), (200, b"locked-bytes"))
-        # gone after one hand-over: asking again just waits (204 after the long poll)
-        t = time.time(); st, _ = self.call("GET", path + "?token=" + j["token"]); self.assertEqual(st, 204); self.assertGreater(time.time() - t, 15)
+        # a read cut off by a dropped connection can ask again...
+        st, body = self.call("GET", path + "?token=" + j["token"]); self.assertEqual((st, body), (200, b"locked-bytes"))
+        # ...and asking for the next piece forgets it: piece 0 is gone for good (the next ask just waits, 204)
+        stop = threading.Event()
+        def sender_page():                                                         # the sender's page keeps checking in
+            while not stop.is_set():
+                self.call("GET", "/api/%s/poll?token=%s" % (r["room"], r["token"]))
+        threading.Thread(target=sender_page, daemon=True).start(); self.addCleanup(stop.set)
+        nxt = "/api/%s/relay/%s/1" % (r["room"], j["peer"])
+        t = time.time(); st, _ = self.call("GET", nxt + "?token=" + j["token"]); self.assertEqual(st, 204); self.assertGreater(time.time() - t, 15)
+        st, _ = self.call("GET", path + "?token=" + j["token"]); self.assertEqual(st, 204)
 
     def test_short_link_hands_over_its_key(self):
         r = self.room("short", key="A" * 22); st, j = self.call("POST", "/api/%s/join" % r["room"], {})
@@ -108,6 +118,17 @@ class Scaredy(unittest.TestCase):
         self.call("POST", "/api/%s/resume" % r["room"], {"token": r["token"]})
         st, d = self.call("GET", "/api/%s/poll?token=%s" % (r["room"], r["token"]))
         self.assertEqual({m["peer"]: m["via"] for m in d["msgs"]}, {j["peer"]: "relay", k["peer"]: ""})
+
+    def test_leaving_and_stopping_are_cleaned_up_without_visitors(self):
+        hdr = lambda tok: {"X-Scaredy-Token": tok, "Content-Type": "application/octet-stream"}
+        r = self.room("relay"); _, j = self.call("POST", "/api/%s/join" % r["room"], {})
+        self.call("POST", "/api/%s/relay/%s/0" % (r["room"], j["peer"]), raw=b"x" * 1000, headers=hdr(r["token"]))
+        self.call("POST", "/api/%s/send" % r["room"], {"token": j["token"], "to": "sender", "data": {"type": "bye"}})
+        st, _ = self.call("POST", "/api/%s/relay/%s/1" % (r["room"], j["peer"]), raw=b"x", headers=hdr(r["token"]))
+        self.assertEqual(st, 410)                                                   # forgotten at once, pieces included
+        self.call("POST", "/api/%s/close" % r["room"], {"token": r["token"]})
+        time.sleep(34)                    # background sweeps only, no requests (other tests' rooms also time out by now)
+        st, d = self.call("GET", "/api/health"); self.assertEqual(d["rooms"], 0)
 
     def test_other_sites_cannot_post(self):
         st, _ = self.call("POST", "/api/rooms", {"mode": "direct"}, headers={"Origin": "https://evil.example"}); self.assertEqual(st, 403)

@@ -85,9 +85,11 @@
   var enc = new TextEncoder(), dec = new TextDecoder();
 
   /* ---------- Keep: a copy of the sender's files in this browser (IndexedDB), so a refresh doesn't lose them (v3).
-     Nothing leaves the device. Wiped on Stop sharing or ✕; copies left by a closed tab are wiped on the next visit. ---------- */
+     Nothing leaves the device. Wiped on Stop sharing or ✕; copies left by a closed tab (no longer reachable: its link and
+     session are gone) are wiped by any Scaredy page opened in this browser later: sender, receiver or how-to (v5). Open
+     sender tabs say "still here" every 30 s, so a copy is never swept while its tab is open. ---------- */
   var Keep = (function () {
-    var dbp = null, STALE = 10 * 60 * 1000;
+    var dbp = null, STALE = 30 * 60 * 1000;   // 30 min: a phone may pause a background tab for a while
     function open() {
       if (!dbp) dbp = new Promise(function (res, rej) {
         if (!window.indexedDB) { rej(new Error("no storage")); return; }
@@ -318,6 +320,8 @@
       })();
     }
     restore();
+    setInterval(function () { if (keepable) Keep.touch(sess.sid); }, 30000);             // "this tab is still here", sharing or not (v5)
+    setInterval(function () { if (keepable) Keep.sweep(sess.sid); }, 5 * 60000);         // copies from tabs closed meanwhile
     window.addEventListener("pageshow", function (e) { if (e.persisted && sharing) location.reload(); });   // back from the browser's page cache
 
     /* the list changed while sharing: redraw it and tell everyone connected */
@@ -524,6 +528,7 @@
 
   /* =====================================================================  RECEIVER  */
   function receiver(room, keyB64) {
+    Keep.sweep(null); setInterval(function () { Keep.sweep(null); }, 5 * 60000);     // copies a closed sender tab left in this browser (v5)
     $("send").hidden = true; $("recv").hidden = false; $("why").hidden = true; $("compare").hidden = true;
     var key = null, me = null, token = null, mode = null, poll = null, pc = null, dc = null, ended = false, pendingIce = [], lastGot = 0, stallTimer = null;
     var list = [], items = {}, current = null, wanted = [], saved = 0;   // items[id] = {meta, parts, got, state, url}

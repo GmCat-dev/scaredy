@@ -189,7 +189,20 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def prune_loop():
+    """Old rate-limit entries (salted hashes, memory only) go after an hour at most, even on a quiet day (v5)."""
+    while True:
+        time.sleep(300)
+        t = time.time()
+        with HITS_LOCK:
+            for table, keep in ((HITS, 60), (TIPS, 600)):
+                for k in [k for k, xs in table.items() if not xs or xs[-1] < t - keep]:
+                    del table[k]
+
+
 def main():
+    rooms.start_cleanup()
+    threading.Thread(target=prune_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     srv.daemon_threads = True
     print("Scaredy GmCat on 127.0.0.1:%d" % PORT, flush=True)

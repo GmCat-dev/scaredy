@@ -25,11 +25,18 @@ never send to a server, so we can't read it either way (relay or direct).
   POST /api/<room>/resume             {token}  the sender's page came back after a refresh: the room carries on, the
                                       people already connected are told to reconnect ("again"), relay pieces restart
   POST /api/<room>/relay/<peer>/<n>   raw encrypted piece n (sender; X-Scaredy-Token); 429 = wait, window full
-  GET  /api/<room>/relay/<peer>/<n>   waits up to 20 s for piece n, hands it over once (receiver; ?token=)
+  GET  /api/<room>/relay/<peer>/<n>   waits up to 20 s for piece n (receiver; ?token=). Asking for n also forgets every
+                                      piece before n, so a piece cut off by a dropped connection can be asked for again
+                                      and each piece is deleted as soon as the next one is asked for (v5)
+
+Clean-up (v5, 2026-11-20, like Drop's cleanup loop): a background sweep every CLEAN_EVERY seconds deletes closed or
+abandoned rooms with any relay pieces still in them, people who stopped checking in, and old rate-limit entries, even
+when nobody else visits. A receiver who leaves ("bye") is removed at once, with anything waiting for them.
 """
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import threading
@@ -53,6 +60,7 @@ WINDOW = 8                # relay: pieces waiting for one receiver at most (8 x 
 MAX_PIECE = 1100 * 1024
 RELAY_MAX_BYTES = 6 * 1024 ** 3   # per room, so the relay can't be used as an open pipe forever
 RELAY_DAY_BYTES = 200 * 1024 ** 3   # whole service per day (fair use); then the relay pauses until tomorrow (UTC)
+CLEAN_EVERY = int(os.environ.get("SCAREDY_CLEAN_EVERY", "30"))   # seconds between background sweeps
 
 ROOMS = {}
 JOINS = {}                # visitor -> recent join times (memory only)
@@ -78,6 +86,30 @@ def _sweep(t):
     for room in ROOMS.values():
         for pid in [p for p, peer in room["peers"].items() if t - peer["seen"] > PEER_GONE]:
             del room["peers"][pid]
+
+
+def sweep_now():
+    """One clean-up pass (the background loop runs this every CLEAN_EVERY seconds)."""
+    t = _now()
+    with LOCK:
+        _sweep(t)
+        for k in [k for k, xs in JOINS.items() if not xs or xs[-1] < t - 60]:
+            del JOINS[k]
+        LOCK.notify_all()          # waiting polls/relay reads notice their room has gone
+        return len(ROOMS)
+
+
+def cleanup_loop():
+    while True:
+        time.sleep(CLEAN_EVERY)
+        try:
+            sweep_now()
+        except Exception as exc:   # keep the loop alive
+            print("cleanup error: %s" % exc, flush=True)
+
+
+def start_cleanup():
+    threading.Thread(target=cleanup_loop, daemon=True).start()
 
 
 def _who(room, token):
@@ -218,6 +250,8 @@ def handle(h, method, parts):
                 h.error(429, "Slow down.")
                 return True
             box.append({"from": who, "data": d.get("data")})
+            if who != "sender" and isinstance(d.get("data"), dict) and d["data"].get("type") == "bye":
+                del room["peers"][who]                   # they closed the page: forget them and anything waiting for them
             LOCK.notify_all()
         h.send_json(200, {"ok": True})
         return True
@@ -323,9 +357,13 @@ def handle(h, method, parts):
                         h.send_json(409, {"error": "restart", "code": "epoch"})
                         return True
                     peer["seen"] = _now()
+                    old = [k for k in peer["relay"] if k < n]   # asking for n means everything before n arrived
+                    for k in old:
+                        del peer["relay"][k]
+                    if old:
+                        LOCK.notify_all()                        # room in the window for the sender
                     if n in peer["relay"]:
-                        body = peer["relay"].pop(n)
-                        LOCK.notify_all()
+                        body = peer["relay"][n]                  # kept until n+1 is asked for, so a dropped read can retry
                         break
                     if _now() >= deadline:
                         h.send_response(204)
