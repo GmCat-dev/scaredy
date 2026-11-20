@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>GM, Scaredy Cat · Send a file without leaving it on anyone's server</title>
+<meta name="description" content="Scaredy GmCat sends files straight from your browser to theirs, through an encrypted relay, or with a short link, and never stores them. Free, no account, no ads, no tracking.">
+<link rel="canonical" href="https://scaredy.gmcat.io/">
+<meta property="og:title" content="GM, Scaredy Cat.">
+<meta property="og:description" content="Send a file without leaving it on anyone's server. Browser to browser, never stored.">
+<meta property="og:image" content="https://scaredy.gmcat.io/img/og.png">
+<meta property="og:url" content="https://scaredy.gmcat.io/">
+<meta name="theme-color" content="#17131F">
+<link rel="icon" href="/img/favicon.png" type="image/png">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/scaredy.css?v=BUILD">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebApplication","name":"Scaredy GmCat","url":"https://scaredy.gmcat.io/","applicationCategory":"UtilitiesApplication","operatingSystem":"Any (web browser)","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"description":"Send a file straight from your browser to theirs, or through an encrypted relay, without it ever being stored. No account, no ads, no tracking.","publisher":{"@type":"Organization","name":"GmCat","url":"https://gmcat.io"}}</script>
+</head>
+<body>
+<div class="scene" aria-hidden="true">
+  <div class="win win-a"><i></i><i></i><i></i></div>
+  <svg class="route" viewBox="0 0 1000 120" preserveAspectRatio="none"><path id="route-path" d="M40 90 C 300 10, 700 10, 960 90"/></svg>
+  <div class="win win-b"><i></i><i></i><i></i></div>
+</div>
+
+<header class="top">
+  <a class="brand" href="/" aria-label="Scaredy GmCat home"><img src="/img/scaredy-ghost.png" alt="" width="34" height="34"><span>Scaredy <b>GmCat</b></span></a>
+  <nav class="topnav"><a href="/how-to/">How to</a><button type="button" class="theme" id="theme" aria-label="Switch Day and Night"><span class="sun">☀</span><span class="moon">☾</span></button></nav>
+</header>
+
+<main>
+  <!-- ================= SENDER ================= -->
+  <section id="send" class="stage">
+    <div class="hero">
+      <button type="button" class="cat cat-float" id="hero-cat" aria-label="Ghost GmCat"><img id="hero-img" src="/img/scaredy-ghost.png" alt="Ghost GmCat holding a mug" width="192" height="192"><span class="boo" id="boo" hidden>boo!</span></button>
+      <h1>GM, Scaredy Cat.</h1>
+      <p class="tag">Send a file without leaving it on anyone's server.</p>
+      <p class="tag2">Too scared to upload? Same.</p>
+      <a class="howlink" href="/how-to/">New here? See how it works in 6 steps →</a>
+    </div>
+
+    <div class="card" id="send-card">
+      <label class="drop" id="drop" for="file">
+        <img src="/img/scaredy-peeking.png" alt="" width="72" height="72">
+        <span class="drop-main" id="drop-main"><b>Pick files</b> or drop them here</span>
+        <span class="drop-sub" id="drop-sub">They stay right here until someone opens the link.</span>
+        <input type="file" id="file" multiple hidden>
+      </label>
+      <ul class="flist" id="pick-list" hidden></ul>
+      <p class="small kept" id="kept-pick" hidden></p>
+
+      <fieldset class="modes">
+        <legend>How scared are you? <small>Most secure first</small></legend>
+        <label class="mode"><input type="radio" name="mode" value="direct" checked>
+          <span><b>Direct</b> <span class="lvl" title="Most secure">🔒🔒🔒</span> <em>for the properly scared</em>
+          <small>Your files go straight from your browser to theirs and never pass through our server. The secret key stays in the link.</small>
+          <span class="pc"><span class="pro">+ The most private: only you and them</span><span class="con">− Some office, school or mobile networks block it, so it may not connect</span><span class="con">− You can see each other's internet address (IP)</span></span></span></label>
+        <label class="mode"><input type="radio" name="mode" value="relay">
+          <span><b>Encrypted relay</b> <span class="lvl" title="Very secure">🔒🔒</span> <em>for the "just get it there" scared</em>
+          <small>Your files stream through our relay while they're sent: locked so we can't read them, and never saved.</small>
+          <span class="pc"><span class="pro">+ Connects on any network</span><span class="pro">+ Hides your internet addresses from each other</span><span class="con">− A little slower</span></span></span></label>
+        <label class="mode"><input type="radio" name="mode" value="short">
+          <span><b>Short link</b> <span class="lvl" title="Secure">🔒</span> <em>for the "can you just read it out?" scared</em>
+          <small>A short link like scaredy.gmcat.io/k7m2-x9pq that's easy to type or say. Files still go straight between your browsers.</small>
+          <span class="pc"><span class="pro">+ Easy to share, even out loud</span><span class="con">− The secret key passes through our server while you connect (never saved), so you trust us a little more</span><span class="con">− Same network limits as Direct, and you can see each other's IP</span></span></span></label>
+      </fieldset>
+      <p class="err" id="err" role="alert" hidden></p>
+      <button type="button" class="btn go" id="start">Make a private link</button>
+      <p class="trust">No account. No ads. No tracking. Close this page and the link disappears.</p>
+    </div>
+
+    <details class="card scares" open>
+      <summary>Things that scare us too</summary>
+      <p>Scaredy GmCat works differently from normal file sharing. Your file stays on your device and the other person gets it from your open page. So:</p>
+      <ul>
+        <li><b>Keep this page open until they have it.</b> Close it, lose your internet, or let your computer sleep, and the link vanishes. You'd need to make a new one.</li>
+        <li><b>On a phone, keep the screen on and stay on this page.</b> Phones pause pages in the background, which stops the transfer. A computer works best for sending.</li>
+        <li><b>They must download while you're online.</b> It's not "send now, grab it later". Agree on a time, or send the link when you're both around.</li>
+        <li><b>If the connection drops partway, they start again.</b> Nothing is kept halfway, anywhere.</li>
+        <li><b>Refreshing is fine.</b> Your files and your link come back by themselves, and anyone receiving picks up again. Closing the page is different: the link vanishes.</li>
+        <li><b>Very big files</b> (several GB) may be too much for the other person's browser, especially on a phone.</li>
+        <li><b>The secret is in the link.</b> Your file is locked with a key that's part of the link itself (the bit after the "#"). Browsers never send that part to any server, so not even our relay can open your file. It also means anyone with the whole link can get the file while you're sharing, so send it only to the person it's for. (A Short link has no room for the key, so it passes through our server while you connect; we never save it.)</li>
+      </ul>
+    </details>
+  </section>
+
+  <!-- ================= SHARING ================= -->
+  <section id="share" class="stage" hidden>
+    <div class="hero">
+      <div class="cat" id="share-cat"><img id="share-img" src="/img/scaredy-shy.png" alt="Shy GmCat" width="160" height="160"></div>
+      <h1 id="share-title">Link ready.</h1>
+      <p class="tag" id="share-tag">Keep this page open while your person arrives.</p>
+    </div>
+    <div class="card">
+      <p class="keep" id="keep">🕯️ <b>Keep this page open.</b> <span id="keep-msg">The link only works while this page is open and online.</span></p>
+      <div class="linkrow"><input id="link" readonly aria-label="Your private link"><button type="button" class="btn" id="copy">Copy link</button></div>
+      <p class="small" id="mode-line"></p>
+      <details class="qr"><summary>Show a QR code</summary><canvas id="qr" width="220" height="220"></canvas></details>
+      <div id="share-strip"><div class="strip" aria-hidden="true"><span class="sw sw-a"></span><span class="path"><span class="trail"></span><span class="lock">🔒</span><span class="mover">📄</span></span><span class="sw sw-b"></span></div></div>
+      <h2 class="people-h">Files</h2><input type="file" id="add-file" multiple hidden>
+      <ul class="flist" id="share-list"></ul>
+      <label class="drop drop-add" id="drop-add" for="add-file"><span class="drop-main"><b>Add more files</b> or drop them here</span><span class="drop-sub">Anyone with the link sees them straight away.</span></label>
+      <p class="small" id="what"></p>
+      <p class="small kept" id="kept-share" hidden></p>
+      <h2 class="people-h">People</h2>
+      <ul class="people" id="people"><li class="nobody" id="nobody">Nobody has opened the link yet.</li></ul>
+      <div class="row"><button type="button" class="btn ghost-btn" id="stop">Stop sharing</button></div>
+    </div>
+  </section>
+
+  <!-- ================= RECEIVER ================= -->
+  <section id="recv" class="stage" hidden>
+    <div class="hero">
+      <div class="cat" id="recv-cat"><img id="recv-img" src="/img/scaredy-peeking.png" alt="GmCat peeking" width="160" height="160"></div>
+      <h1 id="recv-title">Someone's sending you a file.</h1>
+      <p class="tag" id="recv-tag">Everything comes straight from their open page. Nothing is stored anywhere.</p>
+    </div>
+    <div class="card">
+      <p class="status" id="r-status">Tiptoeing over to the sender…</p>
+      <div id="r-file" hidden>
+        <ul class="flist" id="r-list"></ul>
+        <button type="button" class="btn go" id="r-go">Receive all</button>
+        <p class="small" id="r-multi" hidden>Your browser may ask once whether this site can download several files. Say yes so each file can save.</p>
+      </div>
+      <div id="recv-strip" hidden><div class="strip" aria-hidden="true"><span class="sw sw-a"></span><span class="path"><span class="trail"></span><span class="lock">🔒</span><span class="mover">📄</span></span><span class="sw sw-b"></span></div></div>
+      <div class="bar" id="r-bar" hidden><i id="r-fill"></i></div>
+      <p class="small" id="r-pct"></p>
+      <p class="small hint" id="r-hint" hidden></p>
+    </div>
+    <div class="card scares">
+      <h2>How this works</h2>
+      <ul>
+        <li>The file comes straight from the sender's open page, or through our encrypted relay if they chose it. It isn't stored anywhere.</li>
+        <li>Keep this page open until it finishes. If the connection drops, open the link again to start over.</li>
+        <li>If the sender has closed their page, the link won't work any more. Ask them for a new one.</li>
+        <li>It's locked with a key that's part of the link, so only someone with this exact link can open it.</li>
+        <li>Only open files from people you know and trust.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="card why" id="why">
+    <h2>Why Scaredy GmCat?</h2>
+    <div class="why-grid">
+      <div><b>👻 Never stored</b><span>No cloud, no warehouse, no "deleted after 7 days". There's nothing to delete because nothing was kept.</span></div>
+      <div><b>🔒 Locked in your browser</b><span>Encrypted before it leaves your device, with a key only the link holds.</span></div>
+      <div><b>🛤️ Three ways across</b><span>Straight between browsers, our encrypted relay when a network gets in the way, or a short link you can read out.</span></div>
+      <div><b>👀 See who's got it</b><span>Live progress for each person you share with.</span></div>
+      <div><b>☕ No strings</b><span>Free. No account, no ads, no tracking, no size cap on direct sends.</span></div>
+      <div><b>📱 Phone-friendly</b><span>Keeps your screen awake while you share, where your phone allows it.</span></div>
+    </div>
+  </section>
+
+  <section class="card faq">
+    <h2>Questions</h2>
+    <details><summary>Is it really never stored?</summary><p>Yes. In Direct mode the file goes from your browser to theirs and our server only helps the two browsers find each other. In Encrypted relay mode, locked pieces pass through our relay and are handed over and forgotten one by one. Nothing is written to disk.</p></details>
+    <details><summary>Can you see my file?</summary><p>With Direct and Encrypted relay, no: it's encrypted in your browser with a key that lives in the part of the link after "#", which browsers never send to any server, ours included. With Short link the key passes through our server while the browsers connect. We never save it and the file still goes straight between you, but if you want zero trust in us, use Direct or Encrypted relay.</p></details>
+    <details><summary>Why didn't it connect?</summary><p>Some networks (offices, schools, some mobile carriers) block direct browser-to-browser connections. Make a new link with Encrypted relay; it works on any network.</p></details>
+    <details><summary>Can I send to several people?</summary><p>Yes. Send the same link to each of them. Each person gets their own copy while your page is open, and you can watch each one's progress.</p></details>
+    <details><summary>Can I send several files, or add one later?</summary><p>Yes. Pick as many as you like. While the link is ready you can add more files or remove some, and anyone with the link sees the list change straight away.</p></details>
+    <details><summary>Which option should I pick?</summary><p>Direct is the most private. If it can't connect, or you'd rather not show your internet address, use Encrypted relay. Pick Short link when you need a link that's easy to type or say out loud; the trade-off is that the secret key passes through our server while you connect.</p></details>
+    <details><summary>What if I refresh the page?</summary><p>Nothing is lost. While you share, the page keeps a copy of your files in your own browser (it never leaves your device), so after a refresh your files and your link come straight back, and anyone receiving reconnects by themselves. A file that was halfway across starts again. The copy is wiped when you press Stop sharing. If you close the page instead, the link vanishes after a few seconds and the copy is wiped the next time you open Scaredy GmCat.</p></details>
+    <details><summary>Is there a size limit?</summary><p>Not for Direct. The relay has a fair-use limit of 6 GB per link. In practice the other person's browser decides how big is too big; several GB can be a stretch on phones.</p></details>
+    <details><summary>Do I need an account?</summary><p>No. Nobody signs up, nobody signs in.</p></details>
+  </section>
+</main>
+
+<footer class="foot">
+  <p><b>Scaredy GmCat</b> is a free tool from <a href="https://gmcat.io">GmCat</a>, the pixel cat with a warm mug.</p>
+  <p><a href="https://support.gmcat.io/terms/">Terms</a> · <a href="https://support.gmcat.io/privacy/">Privacy</a> · <a href="https://support.gmcat.io/">Support</a> · <a href="https://tools.gmcat.io/">More GmCat tools</a> · <a href="https://drop.gmcat.io/">GmCat Drop</a></p>
+</footer>
+
+<dialog class="ask" id="ask"><h3 id="ask-title"></h3><p id="ask-text"></p><div class="ask-acts"><button type="button" class="btn ghost-btn" id="ask-no">Cancel</button><button type="button" class="btn go" id="ask-yes">OK</button></div></dialog>
+<script src="/qrcode.js?v=BUILD" defer></script>
+<script src="/scaredy.js?v=BUILD" defer></script>
+<script src="/insights.js" data-site="scaredy" defer></script>
+</body>
+</html>
