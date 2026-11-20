@@ -408,7 +408,7 @@
     }
     function setStatus(pid, status) { var p = people[pid]; if (!p) return; p.status = status; personRow(pid); overallMood(); }
     function signal(pid, data) { return api("POST", room + "/send", { token: token, to: pid, data: data }); }
-    function gotLine(p) { return p.got ? "✓ Has " + plural(p.got, "file", "files") + "." : ""; }
+    function gotLine(p) { return ((p.got ? "✓ Has " + plural(p.got, "file", "files") + "." : "") + (p.unread ? " Couldn't read " + p.unread + ": add it again." : "")).trim(); }
 
     function onSignal(d) {
       if (Date.now() - lastTouch > 30000) { lastTouch = Date.now(); Keep.touch(sess.sid); }   // "this tab is still here"
@@ -452,6 +452,10 @@
         if ((p.gen || 0) !== g) return;                              // switched to the relay meanwhile: the receiver asks again (v7)
         p.sending = false; p.busy = false;
         if (p.relayBroken) { relayGaveUp(pid); return; }            // gave up on the relay: tell them, so they aren't left waiting (v7)
+        if (e.unreadable && !p.stopped) {                            // v9: this browser can't read that file any more: say so, send the rest
+          signal(pid, { type: "skip", id: f.id }).catch(function () {});
+          p.unread = f.file.name; setStatus(pid, e.message + " They were told."); pump(pid); return;
+        }
         if (!p.stopped) setStatus(pid, e.status === 410 ? "They left." : e.message || "Something went wrong.");
       });
     }
@@ -517,7 +521,7 @@
           f.file.slice(off, end).arrayBuffer().then(function (buf) { return seal(key, T_DATA, cat2(idb, buf)); }).then(function (b) {
             if (dc.readyState !== "open") { reject(new Error("The connection closed.")); return; }
             dc.send(b); off = end; progress(pid, f, off); next();
-          }).catch(function () { reject(new Error("Couldn't read " + f.file.name + ". Try adding it again.")); });
+          }).catch(function () { var e = new Error("Couldn't read " + f.file.name + ". Try adding it again."); e.unreadable = true; reject(e); });
         })();
       });
     }
@@ -562,7 +566,8 @@
         if (people[pid].stopped) return Promise.reject(new Error("They left."));
         if (off >= f.file.size) return seal(key, T_DONE, idb).then(function (b) { return relayPut(pid, b); });
         var end = Math.min(f.file.size, off + RELAY_CHUNK);
-        return f.file.slice(off, end).arrayBuffer().then(function (buf) { return seal(key, T_DATA, cat2(idb, buf)); })
+        return f.file.slice(off, end).arrayBuffer().catch(function () { var e = new Error("Couldn't read " + f.file.name + ". Try adding it again."); e.unreadable = true; throw e; })
+          .then(function (buf) { return seal(key, T_DATA, cat2(idb, buf)); })
           .then(function (b) { return relayPut(pid, b); }).then(function () { off = end; progress(pid, f, off); return next(); });
       }
       return next();
@@ -600,7 +605,7 @@
         var li = document.createElement("li");
         li.innerHTML = '<span class="ico"></span><span class="fn"><b></b><small></small></span><span class="act"></span>';
         li.querySelector(".ico").textContent = icon(m.name); li.querySelector("b").textContent = m.name;
-        li.querySelector("small").textContent = size(m.size) + (it.state === "receiving" ? " · " + Math.round(it.got / Math.max(1, m.size) * 100) + "%" : it.state === "queued" ? " · waiting" : it.state === "done" ? " · saved" : "");
+        li.querySelector("small").textContent = size(m.size) + (it.state === "receiving" ? " · " + Math.round(it.got / Math.max(1, m.size) * 100) + "%" : it.state === "queued" ? " · waiting" : it.state === "done" ? " · saved" : "") + (it.skipped && it.state === "new" ? " · the sender's page couldn't read it" : "");
         var act = li.querySelector(".act");
         if (it.state === "done") { var a = document.createElement("a"); a.className = "btn small-btn"; a.href = it.url; a.download = m.name; a.textContent = "Save again"; act.appendChild(a); }
         else if (it.state === "new" && !frozen) { var b = document.createElement("button"); b.type = "button"; b.className = "btn small-btn"; b.textContent = "Receive"; b.addEventListener("click", function () { ask1([m.id]); }); act.appendChild(b); }
@@ -659,9 +664,11 @@
     }
     $("r-go").addEventListener("click", function () { ask1(list.map(function (m) { return m.id; })); });
     function handleFrame(f) {
+      if (ended) return;                                               // v9: late pieces after a stop are ignored
       if (f.type === T_LIST) { onList(JSON.parse(dec.decode(f.data))); return; }
       var id = readU32(f.data), it = items[id]; if (!it) return;
       if (f.type === T_DATA) {
+        if (it.state !== "queued" && it.state !== "receiving") return;   // v9: leftovers of a file that was stopped
         current = id; it.state = "receiving"; it.parts.push(f.data.slice(4)); it.got += f.data.byteLength - 4; lastGot = Date.now(); hint("");
         $("r-pct").textContent = "Tiptoeing across… " + it.meta.name + " · " + Math.round(it.got / Math.max(1, it.meta.size) * 100) + "% (" + size(it.got) + " of " + size(it.meta.size) + ")";
         strip("recv-strip", it.got / Math.max(1, it.meta.size), mode === "relay");
@@ -669,6 +676,14 @@
         return;
       }
       if (f.type === T_DONE) {
+        if (it.state !== "receiving" && it.state !== "queued") return;
+        if (it.got !== it.meta.size) {                                  // v9: never save a short or empty file as a success
+          it.state = "new"; it.parts = []; it.got = 0; current = null; wanted = wanted.filter(function (x) { return x !== id; });
+          $("r-pct").textContent = ""; drawList(false); mood("recv-img", "recv-cat", "sad");
+          hint(it.meta.name + " arrived incomplete, so it wasn't saved. Tap Receive to try again.");
+          if (!wanted.length) { $("recv-title").textContent = "That one didn't arrive whole."; status("Nothing incomplete was saved. Tap Receive to try again."); }
+          return;
+        }
         var blob = new Blob(it.parts, { type: it.meta.type || "application/octet-stream" }); it.parts = [];
         it.url = URL.createObjectURL(blob); it.state = "done"; current = null; saved += 1;
         var a = document.createElement("a"); a.href = it.url; a.download = it.meta.name; document.body.appendChild(a); a.click(); a.remove();
@@ -718,6 +733,17 @@
       if (resumeIds.length) hint("The connection changed partway, so the file in progress starts again.");
       relayGen += 1; relayGet(0, relayGen);
     }
+    function fileSkipped(id) {                                         // v9: the sender's browser couldn't read this file
+      var it = items[id]; if (!it || it.state === "done" || ended) return;
+      it.state = "new"; it.skipped = true; it.parts = []; it.got = 0; wanted = wanted.filter(function (x) { return x !== id; }); if (current === id) current = null;
+      $("r-pct").textContent = ""; drawList(false);
+      hint("The sender's page couldn't read " + it.meta.name + ". Ask them to add it again." + (wanted.length ? " The other files are still coming." : ""));
+      if (!wanted.length) {
+        mood("recv-img", "recv-cat", saved ? "thumbs" : "sad");
+        $("recv-title").textContent = saved ? "Phew. The rest made it." : "That file couldn't be sent.";
+        status(saved ? "✓ The other files made it. Check your downloads." : "Nothing came across. Ask the sender to add the file again.");
+      }
+    }
     function senderGaveUp() {
       if (ended) return; ended = true; stopAll(); hint("");
       Object.keys(items).forEach(function (k) { var it = items[k]; if (it.state !== "done") { it.state = "new"; it.parts = []; it.got = 0; } });
@@ -730,6 +756,7 @@
         var x = m.data || {};
         if (x.type === "relay") toRelay();
         else if (x.type === "failed") senderGaveUp();
+        else if (x.type === "skip") fileSkipped(+x.id);
         else if (x.type === "again") senderBack(x.epoch);
         else if (x.type === "offer") answer(x.sdp);
         else if (x.type === "ice" && x.c) { if (pc && pc.remoteDescription) pc.addIceCandidate(x.c).catch(function () {}); else pendingIce.push(x.c); }
@@ -759,6 +786,7 @@
       fetch("/api/" + room + "/relay/" + me + "/" + n + "?token=" + encodeURIComponent(token) + "&e=" + epoch, { cache: "no-store" }).then(function (r) {
         if (gen !== relayGen || r.status === 409) return;                // the sender's page reloaded: a new loop has started
         if (r.status === 204) return relayGet(n, gen);
+        if (r.status === 429 || r.status >= 500) { setTimeout(function () { relayGet(n, gen); }, 2000); return; }   // v9: a hiccup, not the end
         if (!r.ok) { gone(); return; }
         return r.arrayBuffer().then(function (buf) { return unseal(key, buf).catch(function () { badKey(); throw new Error("key"); }); }).then(function (f) { if (gen !== relayGen) return; handleFrame(f); relayGet(n + 1, gen); });
       }).catch(function (e) { if (!ended && e.message !== "key") setTimeout(function () { relayGet(n, gen); }, 1500); });

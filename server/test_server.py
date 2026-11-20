@@ -78,7 +78,10 @@ class Scaredy(unittest.TestCase):
         stop = threading.Event()
         def sender_page():                                                         # the sender's page keeps checking in
             while not stop.is_set():
-                self.call("GET", "/api/%s/poll?token=%s" % (r["room"], r["token"]))
+                try:
+                    self.call("GET", "/api/%s/poll?token=%s" % (r["room"], r["token"]))
+                except OSError:                                                    # the test server is shutting down
+                    return
         threading.Thread(target=sender_page, daemon=True).start(); self.addCleanup(stop.set)
         nxt = "/api/%s/relay/%s/1" % (r["room"], j["peer"])
         t = time.time(); st, _ = self.call("GET", nxt + "?token=" + j["token"]); self.assertEqual(st, 204); self.assertGreater(time.time() - t, 15)
@@ -188,7 +191,10 @@ class BusyRelay(unittest.TestCase):
         stop = threading.Event()
         def sender_page():                                                         # the sender's page keeps checking in
             while not stop.is_set():
-                self.call("GET", "/api/%s/poll?token=%s" % (r["room"], r["token"]))
+                try:
+                    self.call("GET", "/api/%s/poll?token=%s" % (r["room"], r["token"]))
+                except OSError:                                                    # the test server is shutting down
+                    return
         threading.Thread(target=sender_page, daemon=True).start(); self.addCleanup(stop.set)
         for _ in range(5):
             try:
