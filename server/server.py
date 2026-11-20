@@ -9,6 +9,10 @@ Environment:
   SCAREDY_PORT          default 4186
   SCAREDY_DEV_STATIC    a folder to serve for local tests (the built site), so one process serves site + API
   SCAREDY_ORIGINS       comma-separated origins allowed to POST (default https://scaredy.gmcat.io)
+  SCAREDY_PAY_URL       GmCat Pay for the tip jar (default http://127.0.0.1:4201, Pay on the same server)
+  SCAREDY_PAY_KEY_FILE  file holding Scaredy's GmCat Pay site key (default /etc/gmcat-scaredy/pay-key); no file = no tips
+
+Tip jar (2026-11-20): POST /api/tip {usd: 1|3|5|10} -> {url} of a GmCat Pay checkout. The key never reaches the page.
 """
 import hashlib
 import hmac
@@ -20,6 +24,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -31,6 +36,10 @@ DEV_STATIC = os.environ.get("SCAREDY_DEV_STATIC", "")
 ORIGINS = {o.strip() for o in os.environ.get("SCAREDY_ORIGINS", "https://scaredy.gmcat.io").split(",") if o.strip()}
 SALT = secrets.token_bytes(32)          # in memory only
 HITS, HITS_LOCK = {}, threading.Lock()  # visitor -> recent POST times (rate limit)
+PAY_URL = os.environ.get("SCAREDY_PAY_URL", "http://127.0.0.1:4201").rstrip("/")
+PAY_KEY_FILE = os.environ.get("SCAREDY_PAY_KEY_FILE", "/etc/gmcat-scaredy/pay-key")
+TIP_AMOUNTS = (1, 3, 5, 10)
+TIPS, TIPS_PER_10_MIN = {}, 6              # per visitor: a checkout link is free to make, but not endless
 POSTS_PER_MINUTE = 240                  # signalling + relay pieces are many small requests; this only stops floods
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8",
@@ -119,10 +128,45 @@ class Handler(BaseHTTPRequestHandler):
         if self.too_many():
             self.drain()
             return self.error(429, "Too many requests. Please slow down.")
+        if parts == ["api", "tip"]:
+            return self.tip()
         if parts[:1] == ["api"] and rooms.handle(self, "POST", parts):
             return
         self.drain()
         self.error(404, "not found")
+
+    def tip(self):
+        try:
+            usd = int(self.read_json().get("usd"))
+        except (ValueError, TypeError, AttributeError):
+            usd = 0
+        if usd not in TIP_AMOUNTS:
+            return self.error(400, "Pick one of the tip amounts.")
+        v, t = self.visitor(), time.time()
+        with HITS_LOCK:
+            recent = [x for x in TIPS.get(v, []) if x > t - 600] + [t]
+            TIPS[v] = recent
+            if len(TIPS) > 5000:
+                for k in [k for k, xs in TIPS.items() if xs[-1] < t - 600]:
+                    del TIPS[k]
+        if len(recent) > TIPS_PER_10_MIN:
+            return self.error(429, "That's a lot of tips! Wait a few minutes and try again.")
+        try:
+            key = Path(PAY_KEY_FILE).read_text().strip()
+        except OSError:
+            return self.error(503, "The tip jar isn't open yet. Thank you for thinking of it!")
+        order = {"amount": "%d.00" % usd, "currency": "USD", "item": "A tip for Scaredy GmCat", "ref": "tip-" + secrets.token_hex(6),
+                 "discounts": False, "return_url": "https://scaredy.gmcat.io/?thanks=1"}
+        req = urllib.request.Request(PAY_URL + "/api/orders", data=json.dumps(order).encode(), method="POST",
+                                     headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                url = json.loads(r.read()).get("checkout_url", "")
+        except Exception:                      # Pay down or refused: never show its details (or the key) to the page
+            url = ""
+        if not url.startswith("https://") and not url.startswith("http://127.0.0.1"):
+            return self.error(502, "The tip jar is stuck right now. Please try again later.")
+        self.send_json(200, {"url": url})
 
     def static(self, parts):
         if len(parts) == 1 and re.match(r"^[2-9a-hjkmnp-z]{4}-?[2-9a-hjkmnp-z]{4}$", parts[0]):

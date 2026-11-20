@@ -135,6 +135,30 @@
     return { stop: function () { stopped = true; } };
   }
 
+  /* tip jar (2026-11-20): our server asks GmCat Pay for a checkout link; it opens in a new tab so sharing isn't interrupted */
+  (function () {
+    var d = $("tip"), usd = 3, busy = false;
+    function pick(v) { usd = v; Array.prototype.forEach.call(d.querySelectorAll(".tip-amts button"), function (b) { b.classList.toggle("on", +b.getAttribute("data-usd") === v); }); $("tip-go").textContent = "Tip $" + v; }
+    $("tip-open").addEventListener("click", function () { $("tip-err").hidden = true; d.showModal(); $("tip-go").focus(); });
+    Array.prototype.forEach.call(d.querySelectorAll(".tip-amts button"), function (b) { b.addEventListener("click", function () { pick(+b.getAttribute("data-usd")); }); });
+    $("tip-no").addEventListener("click", function () { d.close(); });
+    d.addEventListener("click", function (e) { if (e.target === d) d.close(); });
+    $("tip-go").addEventListener("click", function () {
+      if (busy) return; busy = true; $("tip-go").disabled = true; $("tip-err").hidden = true;
+      var w = window.open("", "_blank");                      // opened now, while the tap counts, so pop-up blockers allow it
+      if (w) { try { w.document.title = "Opening GmCat Pay…"; w.document.body.textContent = "Opening GmCat Pay…"; } catch (e) { /* ignore */ } }
+      api("POST", "tip", { usd: usd }).then(function (r) {
+        if (w) { w.opener = null; w.location.replace(r.url); d.close(); }
+        else location.href = r.url;                          // pop-ups blocked: go there in this tab
+      }).catch(function (e) { if (w) w.close(); $("tip-err").textContent = e.message; $("tip-err").hidden = false; })
+        .then(function () { busy = false; $("tip-go").disabled = false; });
+    });
+    if (/[?&]thanks=1/.test(location.search)) {
+      $("thanks").hidden = false; setTimeout(function () { $("thanks").hidden = true; }, 6000);
+      try { history.replaceState(null, "", location.pathname + location.hash); } catch (e) { /* ignore */ }
+    }
+  })();
+
   /* the ghost: tap three times for a "boo!" */
   var taps = [];
   $("hero-cat").addEventListener("click", function () {
