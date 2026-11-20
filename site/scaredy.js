@@ -251,7 +251,7 @@
         "Direct: straight between your browsers. If their network blocks it, they'll be told.";
       try { dropQR.draw($("qr"), link); } catch (e) { /* QR is optional */ }
       strip("share-strip", null, mode === "relay");
-      $("send").hidden = true; $("why").hidden = true; $("share").hidden = false; window.scrollTo(0, 0);
+      $("send").hidden = true; $("why").hidden = true; $("compare").hidden = true; $("share").hidden = false; window.scrollTo(0, 0);
       shareChanged(); keepAwake();
       poll = poller(room, token, onSignal, function (e) {
         if (e && e.code === "moved") ended("This link is now being shared from another tab or window.", "moved");
@@ -466,7 +466,7 @@
 
   /* =====================================================================  RECEIVER  */
   function receiver(room, keyB64) {
-    $("send").hidden = true; $("recv").hidden = false; $("why").hidden = true;
+    $("send").hidden = true; $("recv").hidden = false; $("why").hidden = true; $("compare").hidden = true;
     var key = null, me = null, token = null, mode = null, poll = null, pc = null, dc = null, ended = false, pendingIce = [], lastGot = 0, stallTimer = null;
     var list = [], items = {}, current = null, wanted = [], saved = 0;   // items[id] = {meta, parts, got, state, url}
     var epoch = 0, relayGen = 0, resumeIds = [], everOpen = false;      // v3: the sender's page can reload and come back

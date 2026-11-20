@@ -45,6 +45,9 @@ Please don't open a public issue. See [SECURITY.md](SECURITY.md).
 
 ## Licence
 
-Code: [MIT](LICENSE). Third-party: qrcode-generator by Kazuhiko Arase (MIT, header in `site/qrcode.js`).
-The GmCat name, character and artwork (including the pictures in `site/img/`) are not covered by the MIT licence; all
+Code: [GNU AGPL-3.0](LICENSE). You can use, change and share it, including running it as a service, as long as you
+share your changes under the same licence with the people who use your service.
+Want to use it without those terms (closed source)? See the [commercial licence](COMMERCIAL.md), paid in $GMGM.
+Third-party code is listed in [NOTICE.md](NOTICE.md).
+The GmCat name, character and artwork (including the pictures in `site/img/`) are not covered by either licence; all
 rights reserved.

@@ -151,6 +151,27 @@
     </div>
   </section>
 
+  <section class="card compare" id="compare">
+    <h2>How Scaredy compares</h2>
+    <p class="small">Most "send a file" services work by uploading your file to their servers and keeping it there for a while. Scaredy never does.</p>
+    <div class="cmp-wrap"><table class="cmp">
+      <thead><tr><th></th><th class="us">👻 Scaredy GmCat</th><th>Upload services<small>like WeTransfer</small></th><th>Cloud share links<small>like Google Drive, Dropbox</small></th></tr></thead>
+      <tbody>
+        <tr><th>Your file is kept on a company's server</th><td class="us yes">Never</td><td class="no">Yes, for days</td><td class="no">Yes, until you delete it</td></tr>
+        <tr><th>Locked so the service can't open it</th><td class="us yes">Yes</td><td class="no">No</td><td class="no">No</td></tr>
+        <tr><th>Account or email needed</th><td class="us yes">No</td><td class="no">Email</td><td class="no">Account</td></tr>
+        <tr><th>Size limit</th><td class="us yes">None for Direct</td><td class="no">Free plans have limits</td><td class="no">Your storage space</td></tr>
+        <tr><th>Ads or tracking</th><td class="us yes">None</td><td class="mid">Varies</td><td class="mid">Varies</td></tr>
+        <tr><th>Code anyone can check</th><td class="us yes"><a href="https://github.com/GmCat-dev/scaredy">Yes, on GitHub</a></td><td class="no">No</td><td class="no">No</td></tr>
+        <tr><th>Works after you close the page</th><td class="us no">No, by design</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+      </tbody>
+    </table></div>
+    <div class="why-grid two">
+      <div><b>👍 Why people pick Scaredy</b><span>Nothing to leak later, because nothing was kept. Three ways across, so it works even on networks that block direct connections. Short links you can read out loud. Add or remove files while you share, see each person's progress, and refresh without losing anything.</span></div>
+      <div><b>👎 When something else is better</b><span>If the other person can't download while you're online, you need a service that stores the file. <a href="https://drop.gmcat.io/">GmCat Drop</a> keeps it for a set time and then deletes it. Very big files can also be hard on phones.</span></div>
+    </div>
+    <p class="small">Other browser-to-browser tools also skip the upload. Scaredy's extras are the encrypted relay for stubborn networks, short links, a live file list and refresh-safe sharing, all free and open source.</p>
+  </section>
   <section class="card faq">
     <h2>Questions</h2>
     <details><summary>Is it really never stored?</summary><p>Yes. In Direct mode the file goes from your browser to theirs and our server only helps the two browsers find each other. In Encrypted relay mode, locked pieces pass through our relay and are handed over and forgotten one by one. Nothing is written to disk.</p></details>
@@ -162,12 +183,13 @@
     <details><summary>What if I refresh the page?</summary><p>Nothing is lost. While you share, the page keeps a copy of your files in your own browser (it never leaves your device), so after a refresh your files and your link come straight back, and anyone receiving reconnects by themselves. A file that was halfway across starts again. The copy is wiped when you press Stop sharing. If you close the page instead, the link vanishes after a few seconds and the copy is wiped the next time you open Scaredy GmCat.</p></details>
     <details><summary>Is there a size limit?</summary><p>Not for Direct. The relay has a fair-use limit of 6 GB per link. In practice the other person's browser decides how big is too big; several GB can be a stretch on phones.</p></details>
     <details><summary>Do I need an account?</summary><p>No. Nobody signs up, nobody signs in.</p></details>
+    <details><summary>Can I check the code?</summary><p>Yes. The code behind Scaredy GmCat is public on <a href="https://github.com/GmCat-dev/scaredy">GitHub</a>, so anyone can check how files are locked, what our server does (and doesn't) keep, and run it themselves.</p></details>
   </section>
 </main>
 
 <footer class="foot">
   <p><b>Scaredy GmCat</b> is a free tool from <a href="https://gmcat.io">GmCat</a>, the pixel cat with a warm mug.</p>
-  <p><a href="https://support.gmcat.io/terms/">Terms</a> · <a href="https://support.gmcat.io/privacy/">Privacy</a> · <a href="https://support.gmcat.io/">Support</a> · <a href="https://tools.gmcat.io/">More GmCat tools</a> · <a href="https://drop.gmcat.io/">GmCat Drop</a></p>
+  <p><a href="https://support.gmcat.io/terms/">Terms</a> · <a href="https://support.gmcat.io/privacy/">Privacy</a> · <a href="https://support.gmcat.io/">Support</a> · <a href="https://github.com/GmCat-dev/scaredy">Source code</a> · <a href="https://tools.gmcat.io/">More GmCat tools</a> · <a href="https://drop.gmcat.io/">GmCat Drop</a></p>
 </footer>
 
 <dialog class="ask" id="ask"><h3 id="ask-title"></h3><p id="ask-text"></p><div class="ask-acts"><button type="button" class="btn ghost-btn" id="ask-no">Cancel</button><button type="button" class="btn go" id="ask-yes">OK</button></div></dialog>

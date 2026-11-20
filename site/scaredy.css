@@ -254,3 +254,18 @@ button.cat { cursor: pointer; }
 .drop-add .drop-main { font-size: 16px; }
 body.dragging .drop:not([hidden]) { background: color-mix(in srgb, var(--lav) 14%, transparent); border-color: var(--orange); }
 .kept { margin-top: 6px; }
+
+/* comparison (2026-11-20) */
+.cmp-wrap { overflow-x: auto; margin: 10px 0 14px; border: 1px solid var(--line); border-radius: 14px; }
+.cmp { width: 100%; border-collapse: collapse; font-size: 15px; min-width: 520px; }
+.cmp th, .cmp td { padding: 9px 10px; text-align: left; border-top: 1px solid var(--line); vertical-align: top; }
+.cmp thead th { border-top: 0; font-size: 14px; } .cmp thead small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
+.cmp tbody th { font-weight: 600; }
+.cmp .us { background: color-mix(in srgb, var(--orange) 10%, transparent); }
+.cmp td.yes { color: var(--green); font-weight: 700; } .cmp td.no { color: var(--muted); } .cmp td.mid { color: var(--muted); }
+.cmp td.us.no { color: var(--ink); font-weight: 600; }
+.compare .why-grid a, .cmp a { color: var(--orange); }
+@media (max-width: 560px) {
+  .cmp { min-width: 0; font-size: 13px; } .cmp th, .cmp td { padding: 7px 5px; }
+  .cmp thead th { font-size: 12px; } .cmp thead small { font-size: 11px; } .compare .card, .compare { padding: 16px 12px; }
+}
