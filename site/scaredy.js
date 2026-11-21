@@ -14,7 +14,7 @@
   var $ = function (id) { return document.getElementById(id); };
   var ICE = [{ urls: "stun:stun.cloudflare.com:3478" }, { urls: "stun:stun.l.google.com:19302" }];
   var DC_CHUNK = 64 * 1024, RELAY_CHUNK = 1024 * 1024, CONNECT_TIMEOUT = 25000, FALLBACK_AFTER = 12000, STALL = 15000;
-  var T_LIST = 1, T_DATA = 2, T_DONE = 3, T_DATA2 = 4, RECONNECTS = 6, RECONNECT_WAIT = 30000;
+  var T_LIST = 1, T_DATA = 2, T_DONE = 3, T_DATA2 = 4, RECONNECTS = 6, RECONNECT_WAIT = 30000, SPARE_WAIT = 20000;
   var ART = { ghost: "/img/scaredy-ghost.png", peeking: "/img/scaredy-peeking.png", shy: "/img/scaredy-shy.png", sweat: "/img/scaredy-sweat.png",
               relieved: "/img/scaredy-relieved.png", thumbs: "/img/scaredy-thumbs.png", sad: "/img/scaredy-sad.png", eek: "/img/scaredy-eek.png" };
   var ALT = { ghost: "Ghost GmCat", peeking: "GmCat peeking", shy: "Shy GmCat", sweat: "GmCat shaking nervously", relieved: "Relieved GmCat",
@@ -484,8 +484,10 @@
         }
         var p = people[m.from]; if (!p || !m.data) return;
         var x = m.data;
-        if (x.type === "answer" && p.pc) p.pc.setRemoteDescription(x.sdp).then(function () { (p.ice || []).forEach(function (c) { p.pc.addIceCandidate(c).catch(function () {}); }); p.ice = []; }).catch(function () {});
-        else if (x.type === "ice" && p.pc && x.c) { if (p.pc.remoteDescription) p.pc.addIceCandidate(x.c).catch(function () {}); else (p.ice = p.ice || []).push(x.c); }
+        var tgt = (p.spare && x.cid && x.cid === p.spare.cid) ? p.spare : (p.pc ? p : null);   // v13: the spare's messages carry its id
+        if (x.type === "answer" && tgt) { var tpc = tgt.pc; tpc.setRemoteDescription(x.sdp).then(function () { (tgt.ice || []).forEach(function (c) { tpc.addIceCandidate(c).catch(function () {}); }); tgt.ice = []; }).catch(function () {}); }
+        else if (x.type === "ice" && tgt && x.c) { if (tgt.pc.remoteDescription) tgt.pc.addIceCandidate(x.c).catch(function () {}); else (tgt.ice = tgt.ice || []).push(x.c); }
+        else if (x.type === "renew") spareTry(m.from);
         else if (x.type === "get" && viaRelay(p)) want(m.from, x.ids, x.from);
         else if (x.type === "got") gotOne(m.from);
         else if (x.type === "bye") { p.stopped = true; p.busy = false; setStatus(m.from, (gotLine(p) + " They left.").trim()); }
@@ -543,18 +545,24 @@
     }
 
     /* ---- direct (and short link): one WebRTC connection per person ---- */
-    function directOffer(pid, waitMs) {
-      var p = people[pid], pc = new RTCPeerConnection({ iceServers: ICE }), opened = false, discT = null; p.pc = pc;
-      var dc = pc.createDataChannel("files", { ordered: true }); dc.binaryType = "arraybuffer"; dc.bufferedAmountLowThreshold = 1024 * 1024; p.dc = dc;
-      pc.onicecandidate = function (e) { if (e.candidate) signal(pid, { type: "ice", c: e.candidate.toJSON() }).catch(function () {}); };
+    /* spare (v13): a second connection opened while the first one (or the relay) keeps going: "make before break". If it
+       opens, the file moves over to it and carries on where it stopped; if not, it's closed quietly and nothing changes.
+       Every offer has a connection id (cid) so both pages can tell the current connection's messages from the spare's. */
+    var cids = 0;
+    function directOffer(pid, waitMs, spare) {
+      var p = people[pid], pc = new RTCPeerConnection({ iceServers: ICE }), opened = false, discT = null, cid = ++cids;
+      var dc = pc.createDataChannel("files", { ordered: true }); dc.binaryType = "arraybuffer"; dc.bufferedAmountLowThreshold = 1024 * 1024;
+      if (spare) { p.spare = { pc: pc, cid: cid, ice: [] }; } else { p.pc = pc; p.dc = dc; p.cid = cid; p.ice = []; p.dropDirect = drop; }
+      pc.onicecandidate = function (e) { if (e.candidate) signal(pid, { type: "ice", c: e.candidate.toJSON(), cid: cid }).catch(function () {}); };
       var timer = setTimeout(function () { if (dc.readyState !== "open") fail(); }, waitMs || (fallback ? FALLBACK_AFTER : CONNECT_TIMEOUT));
+      function mine() { return spare && !opened ? p.spare && p.spare.pc === pc : p.pc === pc; }
       function fail() {
-        if (p.stopped || p.relay || people[pid] !== p) return; clearTimeout(timer);
+        if (spare && !opened) { clearTimeout(timer); drop(); if (p.spare && p.spare.pc === pc) p.spare = null; return; }   // quietly: the current route keeps going
+        if (p.stopped || p.relay || people[pid] !== p || !mine()) return; clearTimeout(timer);
         if (fallback) { toRelay(pid); return; }
         p.stopped = true; p.blocked = true; drop(); setStatus(pid, "Couldn't sneak through their network.");
       }
-      function drop() { clearTimeout(discT); dc.onclose = null; pc.onconnectionstatechange = null; try { pc.close(); } catch (e) { /* ignore */ } }
-      p.dropDirect = drop;
+      function drop() { clearTimeout(discT); dc.onclose = null; dc.onopen = null; pc.onconnectionstatechange = null; try { pc.close(); } catch (e) { /* ignore */ } }
       /* v12: a connection that worked and then dropped (a phone switching between mobile data and Wi-Fi, say) gets a fresh
          direct connection by itself; the receiver then asks to carry on where the file stopped. Only if that fails too does
          the old path run (the relay, or "Send through the relay instead"). */
@@ -575,26 +583,49 @@
         else if (st === "failed") { if (opened) lost(); else fail(); }
         else if (st === "disconnected" && opened && !discT) discT = setTimeout(function () { discT = null; if (pc.connectionState !== "connected") lost(); }, 7000);
       };
-      dc.onopen = function () { clearTimeout(timer); opened = true; setStatus(pid, "Connected. Looking at your files…"); sendList(pid); };
+      dc.onopen = function () {
+        clearTimeout(timer);
+        if (spare) {                                                  // v13: the spare works: move over to it
+          if (!(p.spare && p.spare.pc === pc) || p.stopped || over || people[pid] !== p) { drop(); return; }
+          p.spare = null;
+          if (p.relay) { p.relay = false; p.fellBack = false; p.n2 = 0; p.chain = null; p.relayBroken = null; }
+          else if (p.dropDirect) p.dropDirect();
+          p.pc = pc; p.dc = dc; p.cid = cid; p.dropDirect = drop; p.ice = [];
+          p.gen = (p.gen || 0) + 1; p.sending = false; p.busy = false; p.queue = []; p.frac = 0; p.blocked = false;
+          opened = true; setStatus(pid, (gotLine(p) + " Found a faster route. Carrying on…").trim()); sendList(pid); return;
+        }
+        opened = true; setStatus(pid, "Connected. Looking at your files…"); sendList(pid);
+      };
       dc.onmessage = function (e) {
-        if (typeof e.data !== "string") return;
+        if (typeof e.data !== "string" || p.dc !== dc) return;
         var m; try { m = JSON.parse(e.data); } catch (x) { return; }
-        if (m.type === "get") want(pid, m.ids, m.from); else if (m.type === "got") gotOne(pid);
+        if (m.type === "get") want(pid, m.ids, m.from); else if (m.type === "got") gotOne(pid); else if (m.type === "renew") spareTry(pid);
       };
       dc.onclose = function () {
+        if (spare && !opened) { fail(); return; }
         if (p.stopped || p.relay || people[pid] !== p) return;
         if (opened) { lost(); return; }
         clearTimeout(timer); drop();
         if (fallback && !over) { toRelay(pid); return; }
         p.stopped = true; p.busy = false; p.blocked = !over; setStatus(pid, (gotLine(p) + " The direct connection dropped.").trim());
       };
-      pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () { return signal(pid, { type: "offer", sdp: pc.localDescription.toJSON() }); }).catch(fail);
+      pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () { return signal(pid, { type: "offer", sdp: pc.localDescription.toJSON(), cid: cid, spare: !!spare }); }).catch(fail);
+    }
+    /* v13: the receiver's network changed, or files are coming slowly: look for a faster route without stopping. Never for
+       people the sender deliberately sends through the Encrypted relay (that's a privacy choice), only when the relay was
+       a fallback or the route is already direct. */
+    function spareTry(pid) {
+      var p = people[pid];
+      if (!p || p.stopped || over || mode === "relay" || !p.v12 || p.spare || !(p.busy || p.sending)) return;
+      if (p.relay && !p.fellBack) return;
+      if ((p.spares = (p.spares || 0) + 1) > 20) return;
+      directOffer(pid, SPARE_WAIT, true);
     }
     /* Direct couldn't get through for this person: carry on with the same link through the encrypted relay, just for them (v4) */
     function toRelay(pid) {
       var p = people[pid]; if (!p || p.relay || over) return;
       if (p.dropDirect) p.dropDirect();
-      p.relay = true; p.stopped = false; p.blocked = false; p.n2 = 0; p.chain = null; p.dc = null; p.pc = null;
+      p.relay = true; p.fellBack = true; p.stopped = false; p.blocked = false; p.n2 = 0; p.chain = null; p.dc = null; p.pc = null;
       p.gen = (p.gen || 0) + 1; p.sending = false; p.busy = false; p.queue = []; p.frac = 0;   // a half-sent file restarts over the relay (v7)
       setStatus(pid, "Their network blocked Direct, so switching them to the encrypted relay…");
       signal(pid, { type: "relay" }).then(function () {
@@ -658,9 +689,10 @@
       }
     }
     function relaySendFile(pid, f, start) {
-      var off = start || 0, idb = u32(f.id), p = people[pid]; if (off) progress(pid, f, off);
+      var off = start || 0, idb = u32(f.id), p = people[pid], g = p.gen || 0; if (off) progress(pid, f, off);
       function next() {
         if (people[pid].stopped) return Promise.reject(new Error("They left."));
+        if ((p.gen || 0) !== g) return Promise.reject(new Error("moved"));    // v13: moved to a faster route meanwhile
         if (off >= f.file.size) return seal(key, T_DONE, idb).then(function (b) { return relayPut(pid, b); });
         var end = Math.min(f.file.size, off + RELAY_CHUNK);
         return f.file.slice(off, end).arrayBuffer().catch(function () { var e = new Error("Couldn't read " + f.file.name + ". Try adding it again."); e.unreadable = true; throw e; })
@@ -679,6 +711,21 @@
     var list = [], items = {}, current = null, wanted = [], saved = 0;   // items[id] = {meta, parts, got, state, url}
     var epoch = 0, relayGen = 0, resumeIds = [], everOpen = false, canFallback = false;      // v3: the sender's page can reload and come back
     var pipe = null, pipeWorks = false;                               // v11: big files stream into a download (Pipe)
+    /* v13: ask the sender to look for a faster route (a spare connection) when this device's network changes, or while
+       files come slowly. The current transfer keeps going meanwhile; the sender decides if a spare is allowed. */
+    var spare = null, lastRenew = 0, slowAsks = 0, rx = 0, rxMark = 0, SLOW = 1.5 * 1024 * 1024;
+    function renew(slow) {
+      if (ended || !(wanted.length || resumeIds.length) || Date.now() - lastRenew < 8000) return;
+      lastRenew = Date.now(); if (slow) slowAsks += 1;
+      api("POST", room + "/send", { token: token, to: "sender", data: { type: "renew" } }).catch(function () {});
+    }
+    function netChanged() { setTimeout(function () { renew(false); }, 2000); }
+    if (navigator.connection && navigator.connection.addEventListener) navigator.connection.addEventListener("change", netChanged);
+    window.addEventListener("online", netChanged);
+    setInterval(function () {                                         // every 20 s: slow? (at most 6 asks, a minute apart)
+      var rate = (rx - rxMark) / 20; rxMark = rx;
+      if (current != null && rate < SLOW && slowAsks < 6 && Date.now() - lastRenew > 60000) renew(true);
+    }, 20000);
     Pipe.init().then(function (r) { pipe = r; });
     var PIPE_WAIT = 10000, PIPE_HOLD = 256 * 1024 * 1024;
     function drop(it) { if (it.sink) { it.sink.abort(); it.sink = null; } it.parts = []; it.got = 0; it.resume = false; it.bad = false; }
@@ -728,6 +775,7 @@
     function gone() {
       if (ended) return; ended = true; stopAll(); hint("");
       Object.keys(items).forEach(function (k) { if (items[k].sink) drop(items[k]); });
+      if (spare) { try { spare.pc.close(); } catch (x) { /* ignore */ } spare = null; }
       var mid = current != null || resumeIds.length > 0;
       mood("recv-img", "recv-cat", saved ? "thumbs" : "sad");
       $("r-go").hidden = true; drawList(true);
@@ -827,7 +875,7 @@
       if (f.type === T_DATA) {
         if (it.state !== "queued" && it.state !== "receiving") return;   // v9: leftovers of a file that was stopped
         if (it.state === "queued") begin(it);
-        current = id; it.state = "receiving"; it.got += f.data.byteLength - 4; lastGot = Date.now();
+        current = id; it.state = "receiving"; it.got += f.data.byteLength - 4; rx += f.data.byteLength - 4; lastGot = Date.now();
         if (!/download|Allow/.test($("r-hint").textContent)) hint("");
         if (it.sink) { it.sink.write(f.data.subarray(4)); waitingPipe(it); if (it.state !== "receiving") return; }
         else it.parts.push(f.data.slice(4));
@@ -923,27 +971,50 @@
         else if (x.type === "failed") senderGaveUp();
         else if (x.type === "skip") fileSkipped(+x.id);
         else if (x.type === "again") senderBack(x.epoch);
-        else if (x.type === "offer") answer(x.sdp);
+        else if (x.type === "offer" && x.spare && (pc || mode === "relay")) spareAnswer(x.sdp, x.cid);   // v13: keep the current route meanwhile
+        else if (x.type === "offer") answer(x.sdp, x.cid);
+        else if (x.type === "ice" && x.c && spare && x.cid && x.cid === spare.cid) { if (spare.pc.remoteDescription) spare.pc.addIceCandidate(x.c).catch(function () {}); else spare.ice.push(x.c); }
         else if (x.type === "ice" && x.c) { if (pc && pc.remoteDescription) pc.addIceCandidate(x.c).catch(function () {}); else pendingIce.push(x.c); }
       });
     }
-    function answer(sdp) {
+    function attach(owner, ch) {                                       // the data channel of the current connection
+      dc = ch; dc.binaryType = "arraybuffer";
+      var chain = Promise.resolve();
+      ch.onopen = function () { everOpen = true; };
+      if (ch.readyState === "open") everOpen = true;
+      ch.onmessage = function (ev) { if (typeof ev.data === "string" || dc !== ch) return; var buf = ev.data; chain = chain.then(function () { return unseal(key, buf); }).then(function (f) { if (dc === ch) handleFrame(f); }).catch(badKey); };
+      ch.onclose = function () { if (!ended && dc === ch) { dc = null; senderAway(); } };   // gone() comes from the poll if it never returns
+    }
+    /* v13: a spare connection offered while files keep coming the current way; when it opens, move over and carry on */
+    function spareAnswer(sdp, cid) {
+      if (spare) try { spare.pc.close(); } catch (x) { /* ignore */ }
+      var s = spare = { cid: cid, pc: new RTCPeerConnection({ iceServers: ICE }), ice: [] }, sp = s.pc;
+      sp.onicecandidate = function (e) { if (e.candidate) api("POST", room + "/send", { token: token, to: "sender", data: { type: "ice", c: e.candidate.toJSON(), cid: cid } }).catch(function () {}); };
+      sp.ondatachannel = function (e) {
+        if (spare !== s || ended) { try { sp.close(); } catch (x) { /* ignore */ } return; }
+        spare = null;
+        var old = pc; dc = null; pc = sp;
+        if (old) try { old.close(); } catch (x) { /* ignore */ }
+        if (mode === "relay") { mode = "direct"; relayGen += 1; }          // off the relay: its loop stops
+        sp.onconnectionstatechange = null;
+        resetPartial(); hint("Found a faster connection. Carrying on where it stopped…");
+        attach(sp, e.channel);
+      };
+      setTimeout(function () { if (spare === s) { spare = null; try { sp.close(); } catch (x) { /* ignore */ } } }, 25000);
+      sp.setRemoteDescription(sdp).then(function () { s.ice.forEach(function (c) { sp.addIceCandidate(c).catch(function () {}); }); s.ice = []; return sp.createAnswer(); })
+        .then(function (a) { return sp.setLocalDescription(a); })
+        .then(function () { return api("POST", room + "/send", { token: token, to: "sender", data: { type: "answer", sdp: sp.localDescription.toJSON(), cid: cid } }); })
+        .catch(function () { if (spare === s) { spare = null; try { sp.close(); } catch (x) { /* ignore */ } } });
+    }
+    function answer(sdp, cid) {
       if (pc) { var stale = pc; pc = null; dc = null; try { stale.close(); } catch (x) { /* ignore */ } resetPartial(); }   // v12: a reconnect: carry on where it stopped
       var mine = pc = new RTCPeerConnection({ iceServers: ICE });
       pc.onicecandidate = function (e) { if (e.candidate) api("POST", room + "/send", { token: token, to: "sender", data: { type: "ice", c: e.candidate.toJSON() } }).catch(function () {}); };
       pc.onconnectionstatechange = function () { if (pc === mine && !everOpen && mine.connectionState === "failed" && !ended) blockedMsg(); };
-      pc.ondatachannel = function (e) {
-        if (pc !== mine) return;
-        var ch = dc = e.channel; dc.binaryType = "arraybuffer";
-        var chain = Promise.resolve();
-        ch.onopen = function () { everOpen = true; };
-        if (ch.readyState === "open") everOpen = true;
-        ch.onmessage = function (ev) { if (typeof ev.data === "string" || dc !== ch) return; var buf = ev.data; chain = chain.then(function () { return unseal(key, buf); }).then(function (f) { if (dc === ch) handleFrame(f); }).catch(badKey); };
-        ch.onclose = function () { if (!ended && dc === ch) { dc = null; senderAway(); } };   // gone() comes from the poll if it never returns
-      };
+      pc.ondatachannel = function (e) { if (pc === mine) attach(mine, e.channel); };
       pc.setRemoteDescription(sdp).then(function () { pendingIce.forEach(function (c) { pc.addIceCandidate(c).catch(function () {}); }); pendingIce = []; return pc.createAnswer(); })
         .then(function (a) { return pc.setLocalDescription(a); })
-        .then(function () { return api("POST", room + "/send", { token: token, to: "sender", data: { type: "answer", sdp: pc.localDescription.toJSON() } }); })
+        .then(function () { return api("POST", room + "/send", { token: token, to: "sender", data: { type: "answer", sdp: pc.localDescription.toJSON(), cid: cid } }); })
         .catch(function () { if (pc === mine) blockedMsg(); });
     }
     function relayGet(n, gen) {

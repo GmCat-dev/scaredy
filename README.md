@@ -25,6 +25,7 @@ This repository is published so anyone can check that Scaredy does what its page
 | Refresh safety (the copy kept in your own browser) | `site/scaredy.js`: `Keep` (IndexedDB, wiped on Stop sharing) |
 | Big files straight to the downloads folder (nothing piles up in memory) | `site/scaredy.js`: `Pipe` + [`site/sw.js`](site/sw.js) (a service worker that passes pieces through once, stores nothing) |
 | Carrying on after a dropped connection | `site/scaredy.js`: `lost()` (sender reconnects), `T_DATA2` pieces carry their place in the file, `resetPartial()` (receiver keeps what arrived) |
+| Moving to a faster route without stopping (a phone joins Wi-Fi, or files come slowly) | `site/scaredy.js`: `spareTry()` + `directOffer(…, spare)` on the sender, `spareAnswer()` + `renew()` on the receiver (never for people sent through the Encrypted relay on purpose) |
 | The service: signalling + relay, memory only | [`server/rooms.py`](server/rooms.py) (the API is listed at the top), `server/server.py` |
 | Limits (fair use, rate limits) | top of `server/rooms.py` and `server/server.py` |
 | Tests | `python3 server/test_server.py` |
