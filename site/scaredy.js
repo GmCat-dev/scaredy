@@ -408,7 +408,7 @@
     }
     function setStatus(pid, status) { var p = people[pid]; if (!p) return; p.status = status; personRow(pid); overallMood(); }
     function signal(pid, data) { return api("POST", room + "/send", { token: token, to: pid, data: data }); }
-    function gotLine(p) { return ((p.got ? "✓ Has " + plural(p.got, "file", "files") + "." : "") + (p.unread ? " Couldn't read " + p.unread + ": add it again." : "")).trim(); }
+    function gotLine(p) { return ((p.got ? "✓ Has " + plural(p.got, "file", "files") + "." : "") + (p.unread ? " Couldn't read " + p.unread + ": add it again." + (p.unreadTold === false ? " (Couldn't reach them to say so.)" : "") : "")).trim(); }
 
     function onSignal(d) {
       if (Date.now() - lastTouch > 30000) { lastTouch = Date.now(); Keep.touch(sess.sid); }   // "this tab is still here"
@@ -453,8 +453,15 @@
         p.sending = false; p.busy = false;
         if (p.relayBroken) { relayGaveUp(pid); return; }            // gave up on the relay: tell them, so they aren't left waiting (v7)
         if (e.unreadable && !p.stopped) {                            // v9: this browser can't read that file any more: say so, send the rest
-          signal(pid, { type: "skip", id: f.id }).catch(function () {});
-          p.unread = f.file.name; setStatus(pid, e.message + " They were told."); pump(pid); return;
+          p.unread = f.file.name; setStatus(pid, e.message + " Telling them…");
+          signal(pid, { type: "skip", id: f.id }).then(function () { p.unreadTold = true; if (!p.stopped && !p.busy) setStatus(pid, gotLine(p) || e.message + " They were told."); },   // v10: only once it went through
+            function () { p.unreadTold = false; if (!p.stopped && !p.busy) setStatus(pid, gotLine(p)); });
+          pump(pid); return;
+        }
+        if (e.conn && !p.relay && !p.stopped && !over) {             // v10: the browser refused to send: treat it like a dropped connection
+          if (p.dropDirect) p.dropDirect();
+          if (fallback) { toRelay(pid); return; }
+          p.stopped = true; p.blocked = true; setStatus(pid, (gotLine(p) + " The direct connection failed.").trim()); return;
         }
         if (!p.stopped) setStatus(pid, e.status === 410 ? "They left." : e.message || "Something went wrong.");
       });
@@ -516,12 +523,17 @@
         (function next() {
           if (p.stopped || dc.readyState !== "open") { reject(new Error("The connection closed.")); return; }
           if (dc.bufferedAmount > 4 * 1024 * 1024) { dc.onbufferedamountlow = function () { dc.onbufferedamountlow = null; next(); }; return; }
-          if (off >= f.file.size) { seal(key, T_DONE, idb).then(function (b) { dc.send(b); resolve(); }, reject); return; }
+          // v10: a send the browser refuses ends this file as a connection problem (never hangs, never blamed on the file)
+          function sendOrFail(b) { try { dc.send(b); return true; } catch (x) { var e = new Error("The connection closed."); e.conn = true; reject(e); return false; } }
+          if (off >= f.file.size) { seal(key, T_DONE, idb).then(function (b) { if (sendOrFail(b)) resolve(); }, reject); return; }
           var end = Math.min(f.file.size, off + DC_CHUNK);
-          f.file.slice(off, end).arrayBuffer().then(function (buf) { return seal(key, T_DATA, cat2(idb, buf)); }).then(function (b) {
-            if (dc.readyState !== "open") { reject(new Error("The connection closed.")); return; }
-            dc.send(b); off = end; progress(pid, f, off); next();
-          }).catch(function () { var e = new Error("Couldn't read " + f.file.name + ". Try adding it again."); e.unreadable = true; reject(e); });
+          f.file.slice(off, end).arrayBuffer()
+            .catch(function () { var e = new Error("Couldn't read " + f.file.name + ". Try adding it again."); e.unreadable = true; throw e; })
+            .then(function (buf) { return seal(key, T_DATA, cat2(idb, buf)); }).then(function (b) {
+              if (dc.readyState !== "open") { reject(new Error("The connection closed.")); return; }
+              if (!sendOrFail(b)) return;
+              off = end; progress(pid, f, off); next();
+            }).catch(function (e) { if (e && e.unreadable) { reject(e); return; } var c = new Error("The connection closed."); c.conn = true; reject(c); });
         })();
       });
     }
