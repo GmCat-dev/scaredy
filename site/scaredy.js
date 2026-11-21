@@ -127,6 +127,64 @@
     };
   })();
 
+  /* ---------- Pipe (v11): a big received file goes straight into a browser download through /sw.js, piece by piece, so a
+     phone never holds the whole file in memory (a 1.8 GB file crashed the tab partway). Small files, and browsers that
+     can't do this (Safari/iPhone, windows without service workers), keep the old way: pieces in memory, saved at the end. ---------- */
+  var Pipe = (function () {
+    var MIN = 32 * 1024 * 1024, BATCH = 1024 * 1024, reg = null, ready = null, open = 0, pinger = null;
+    var ua = navigator.userAgent;
+    var apple = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) || (/Safari/.test(ua) && !/Chrome|Chromium|CriOS|Android|Edg|FxiOS|Firefox/.test(ua));
+    function init() {
+      if (ready) return ready;
+      if (apple || !("serviceWorker" in navigator) || !window.ReadableStream || !window.MessageChannel) return (ready = Promise.resolve(null));
+      ready = Promise.race([
+        navigator.serviceWorker.register("/sw.js").then(function () { return navigator.serviceWorker.ready; }),
+        new Promise(function (res) { setTimeout(function () { res(null); }, 6000); })
+      ]).then(function (r) { reg = r && r.active ? r : null; return reg; }, function () { return null; });
+      return ready;
+    }
+    function hex() { return Array.prototype.map.call(crypto.getRandomValues(new Uint8Array(16)), function (b) { return (b < 16 ? "0" : "") + b.toString(16); }).join(""); }
+    function ping() {                                                 // keeps the worker awake while a download runs
+      if (!pinger) pinger = setInterval(function () {
+        if (!open) { clearInterval(pinger); pinger = null; return; }
+        try { if (reg.active) reg.active.postMessage({ t: "ping" }); } catch (e) { /* ignore */ }
+      }, 10000);
+    }
+    /* one file: write(bytes) as pieces arrive, end() when it's whole, abort() if it breaks (the browser then marks the
+       download failed: an incomplete file is never left looking finished). onstate("started" | "cancel") */
+    function sink(meta, onstate) {
+      var ch = new MessageChannel(), id = hex(), buf = [], bufLen = 0, started = false, closed = false, waiting = [], held = 0;
+      var frame = document.createElement("iframe"); frame.hidden = true; frame.title = "download";
+      function post(m) { if (m instanceof ArrayBuffer) ch.port1.postMessage(m, [m]); else ch.port1.postMessage(m); }
+      function queue(m) { if (started) post(m); else { waiting.push(m); if (m instanceof ArrayBuffer) held += m.byteLength; } }
+      function flush() {
+        if (!bufLen) return; var out = new Uint8Array(bufLen), o = 0;
+        buf.forEach(function (p) { out.set(p, o); o += p.byteLength; }); buf = []; bufLen = 0; queue(out.buffer);
+      }
+      function finish(now) { open = Math.max(0, open - 1); if (now) frame.remove(); else setTimeout(function () { frame.remove(); }, 60000); }
+      ch.port1.onmessage = function (m) {
+        var d = m.data || {};
+        if (d.t === "started") { started = true; waiting.forEach(post); waiting = []; held = 0; onstate("started"); }
+        else if (d.t === "cancel" && !closed) { closed = true; finish(true); onstate("cancel"); }
+      };
+      open += 1; ping();
+      reg.active.postMessage({ t: "open", id: id, name: meta.name, size: meta.size }, [ch.port2]);
+      frame.src = "/__dl/" + id + "/" + encodeURIComponent(meta.name); document.body.appendChild(frame);
+      return {
+        write: function (u8) { if (closed) return; buf.push(u8); bufLen += u8.byteLength; if (bufLen >= BATCH) flush(); },
+        end: function () { if (closed) return; closed = true; flush(); queue("end"); finish(false); },
+        abort: function () { if (closed) return; closed = true; buf = []; bufLen = 0; waiting = []; held = 0; if (started) post("abort"); finish(!started); },
+        started: function () { return started; },
+        held: function () { return held + bufLen; },                  // bytes waiting in this page because the download hasn't started yet
+        take: function () {                                           // the download never started: hand back what's waiting, memory instead
+          var out = waiting.filter(function (m) { return m instanceof ArrayBuffer; }).map(function (b) { return new Uint8Array(b); }).concat(buf);
+          waiting = []; buf = []; bufLen = 0; held = 0; closed = true; finish(true); return out;
+        }
+      };
+    }
+    return { MIN: MIN, init: init, sink: sink };
+  })();
+
   function poller(room, token, onMsgs, onGone) {
     var stopped = false;
     (function loop() {
@@ -593,11 +651,41 @@
     var key = null, me = null, token = null, mode = null, poll = null, pc = null, dc = null, ended = false, pendingIce = [], lastGot = 0, stallTimer = null;
     var list = [], items = {}, current = null, wanted = [], saved = 0;   // items[id] = {meta, parts, got, state, url}
     var epoch = 0, relayGen = 0, resumeIds = [], everOpen = false, canFallback = false;      // v3: the sender's page can reload and come back
+    var pipe = null, pipeWorks = false;                               // v11: big files stream into a download (Pipe)
+    Pipe.init().then(function (r) { pipe = r; });
+    var PIPE_WAIT = 10000, PIPE_HOLD = 256 * 1024 * 1024;
+    function drop(it) { if (it.sink) { it.sink.abort(); it.sink = null; } it.parts = []; it.got = 0; }
+    function begin(it) {                                              // first piece of a file
+      drop(it); it.piped = false;
+      if (pipe && it.meta.size >= Pipe.MIN) { it.sink = Pipe.sink(it.meta, function (s) { onPipe(it, s); }); it.since = Date.now(); }
+    }
+    function onPipe(it, s) {
+      if (s === "started") { pipeWorks = true; if (/download|Allow/.test($("r-hint").textContent)) hint(""); return; }
+      if (it.state !== "receiving" && it.state !== "queued") return;    // "cancel": stopped in the browser's downloads list
+      it.sink = null; drop(it); it.state = "new"; var id = it.meta.id;
+      wanted = wanted.filter(function (x) { return x !== id; }); if (current === id) current = null;
+      $("r-pct").textContent = ""; drawList(false);
+      hint(it.meta.name + " was cancelled in your downloads. Tap Receive to get it again.");
+    }
+    function waitingPipe(it) {                                        // the browser hasn't started the download yet
+      if (!it.sink || it.sink.started()) return;
+      var t = Date.now() - it.since;
+      if (!pipeWorks && t > PIPE_WAIT) {                              // never started in this browser: keep it in memory the old way
+        it.parts = it.sink.take(); it.sink = null; pipe = null; return;
+      }
+      if (t > PIPE_WAIT) hint("Waiting for your browser to start the download. If it asks about downloading several files, tap Allow.");
+      if (it.sink.held() > PIPE_HOLD) {                               // stop before the phone's memory fills up
+        var id = it.meta.id; drop(it); it.state = "new"; current = null; wanted = wanted.filter(function (x) { return x !== id; });
+        $("r-pct").textContent = ""; drawList(false);
+        hint("Your browser didn't start the download, so " + it.meta.name + " stopped before it could fill your memory. Allow downloads for this site, then tap Receive.");
+      }
+    }
     function status(t) { $("r-status").textContent = t; }
     function hint(t) { $("r-hint").textContent = t || ""; $("r-hint").hidden = !t; }
     function stopAll() { if (poll) poll.stop(); if (pc) try { pc.close(); } catch (e) { /* ignore */ } clearInterval(stallTimer); }
     function gone() {
       if (ended) return; ended = true; stopAll(); hint("");
+      Object.keys(items).forEach(function (k) { if (items[k].sink) drop(items[k]); });
       var mid = current != null || resumeIds.length > 0;
       mood("recv-img", "recv-cat", saved ? "thumbs" : "sad");
       $("r-go").hidden = true; drawList(true);
@@ -617,9 +705,10 @@
         var li = document.createElement("li");
         li.innerHTML = '<span class="ico"></span><span class="fn"><b></b><small></small></span><span class="act"></span>';
         li.querySelector(".ico").textContent = icon(m.name); li.querySelector("b").textContent = m.name;
-        li.querySelector("small").textContent = size(m.size) + (it.state === "receiving" ? " · " + Math.round(it.got / Math.max(1, m.size) * 100) + "%" : it.state === "queued" ? " · waiting" : it.state === "done" ? " · saved" : "") + (it.skipped && it.state === "new" ? " · the sender's page couldn't read it" : "");
+        li.querySelector("small").textContent = size(m.size) + (it.state === "receiving" ? " · " + Math.round(it.got / Math.max(1, m.size) * 100) + "%" : it.state === "queued" ? " · waiting" : it.state === "done" ? (it.piped ? " · saved to downloads" : " · saved") : "") + (it.skipped && it.state === "new" ? " · the sender's page couldn't read it" : "");
         var act = li.querySelector(".act");
-        if (it.state === "done") { var a = document.createElement("a"); a.className = "btn small-btn"; a.href = it.url; a.download = m.name; a.textContent = "Save again"; act.appendChild(a); }
+        if (it.state === "done" && it.piped) act.textContent = "✓";
+        else if (it.state === "done") { var a = document.createElement("a"); a.className = "btn small-btn"; a.href = it.url; a.download = m.name; a.textContent = "Save again"; act.appendChild(a); }
         else if (it.state === "new" && !frozen) { var b = document.createElement("button"); b.type = "button"; b.className = "btn small-btn"; b.textContent = "Receive"; b.addEventListener("click", function () { ask1([m.id]); }); act.appendChild(b); }
         else if (it.state === "receiving") act.textContent = "⏳";
         else if (it.state === "queued") act.textContent = "…";
@@ -630,7 +719,9 @@
         var it = items[id], li = document.createElement("li");
         li.innerHTML = '<span class="ico"></span><span class="fn"><b></b><small>saved</small></span><span class="act"><a class="btn small-btn">Save again</a></span>';
         li.querySelector(".ico").textContent = icon(it.meta.name); li.querySelector("b").textContent = it.meta.name;
-        var a = li.querySelector("a"); a.href = it.url; a.download = it.meta.name; ul.appendChild(li);
+        var a = li.querySelector("a");
+        if (it.piped) { li.querySelector("small").textContent = "saved to downloads"; a.parentNode.textContent = "✓"; } else { a.href = it.url; a.download = it.meta.name; }
+        ul.appendChild(li);
       });
       var fresh = list.filter(function (m) { return items[m.id].state === "new"; });
       $("r-go").hidden = frozen || fresh.length < 1; $("r-go").textContent = fresh.length === 1 ? "Receive file" : "Receive all (" + fresh.length + ")";
@@ -639,7 +730,7 @@
     }
     /* the sender's page went away (refresh?): half-received files start again when it's back */
     function resetPartial() {
-      Object.keys(items).forEach(function (k) { var it = items[k]; if (it.state === "receiving" || it.state === "queued") { it.state = "new"; it.parts = []; it.got = 0; if (resumeIds.indexOf(+k) === -1) resumeIds.push(+k); } });
+      Object.keys(items).forEach(function (k) { var it = items[k]; if (it.state === "receiving" || it.state === "queued") { it.state = "new"; drop(it); if (resumeIds.indexOf(+k) === -1) resumeIds.push(+k); } });
       wanted = []; current = null; $("r-pct").textContent = ""; if (list.length) drawList(false);
     }
     function senderAway() {
@@ -681,7 +772,11 @@
       var id = readU32(f.data), it = items[id]; if (!it) return;
       if (f.type === T_DATA) {
         if (it.state !== "queued" && it.state !== "receiving") return;   // v9: leftovers of a file that was stopped
-        current = id; it.state = "receiving"; it.parts.push(f.data.slice(4)); it.got += f.data.byteLength - 4; lastGot = Date.now(); hint("");
+        if (it.state === "queued") begin(it);
+        current = id; it.state = "receiving"; it.got += f.data.byteLength - 4; lastGot = Date.now();
+        if (!/download|Allow/.test($("r-hint").textContent)) hint("");
+        if (it.sink) { it.sink.write(f.data.subarray(4)); waitingPipe(it); if (it.state !== "receiving") return; }
+        else it.parts.push(f.data.slice(4));
         $("r-pct").textContent = "Tiptoeing across… " + it.meta.name + " · " + Math.round(it.got / Math.max(1, it.meta.size) * 100) + "% (" + size(it.got) + " of " + size(it.meta.size) + ")";
         strip("recv-strip", it.got / Math.max(1, it.meta.size), mode === "relay");
         if (!it.tick || Date.now() - it.tick > 300) { it.tick = Date.now(); drawList(false); }
@@ -690,15 +785,18 @@
       if (f.type === T_DONE) {
         if (it.state !== "receiving" && it.state !== "queued") return;
         if (it.got !== it.meta.size) {                                  // v9: never save a short or empty file as a success
-          it.state = "new"; it.parts = []; it.got = 0; current = null; wanted = wanted.filter(function (x) { return x !== id; });
+          it.state = "new"; drop(it); current = null; wanted = wanted.filter(function (x) { return x !== id; });
           $("r-pct").textContent = ""; drawList(false); mood("recv-img", "recv-cat", "sad");
           hint(it.meta.name + " arrived incomplete, so it wasn't saved. Tap Receive to try again.");
           if (!wanted.length) { $("recv-title").textContent = "That one didn't arrive whole."; status("Nothing incomplete was saved. Tap Receive to try again."); }
           return;
         }
-        var blob = new Blob(it.parts, { type: it.meta.type || "application/octet-stream" }); it.parts = [];
-        it.url = URL.createObjectURL(blob); it.state = "done"; current = null; saved += 1;
-        var a = document.createElement("a"); a.href = it.url; a.download = it.meta.name; document.body.appendChild(a); a.click(); a.remove();
+        if (it.sink) { it.sink.end(); it.sink = null; it.piped = true; it.state = "done"; current = null; saved += 1; }   // v11: it's already in the downloads
+        else {
+          var blob = new Blob(it.parts, { type: it.meta.type || "application/octet-stream" }); it.parts = [];
+          it.url = URL.createObjectURL(blob); it.state = "done"; current = null; saved += 1;
+          var a = document.createElement("a"); a.href = it.url; a.download = it.meta.name; document.body.appendChild(a); a.click(); a.remove();
+        }
         send({ type: "got", id: id }); stripDone("recv-strip");
         wanted = wanted.filter(function (x) { return x !== id; });
         drawList(false);
@@ -710,6 +808,7 @@
       }
     }
     window.addEventListener("pagehide", function () {
+      Object.keys(items).forEach(function (k) { if (items[k].sink) drop(items[k]); });
       if (token && !ended) fetch("/api/" + room + "/send", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: token, to: "sender", data: { type: "bye" } }) }).catch(function () {});
     });
     function watchStall() {
@@ -747,7 +846,7 @@
     }
     function fileSkipped(id) {                                         // v9: the sender's browser couldn't read this file
       var it = items[id]; if (!it || it.state === "done" || ended) return;
-      it.state = "new"; it.skipped = true; it.parts = []; it.got = 0; wanted = wanted.filter(function (x) { return x !== id; }); if (current === id) current = null;
+      it.state = "new"; it.skipped = true; drop(it); wanted = wanted.filter(function (x) { return x !== id; }); if (current === id) current = null;
       $("r-pct").textContent = ""; drawList(false);
       hint("The sender's page couldn't read " + it.meta.name + ". Ask them to add it again." + (wanted.length ? " The other files are still coming." : ""));
       if (!wanted.length) {
@@ -758,7 +857,7 @@
     }
     function senderGaveUp() {
       if (ended) return; ended = true; stopAll(); hint("");
-      Object.keys(items).forEach(function (k) { var it = items[k]; if (it.state !== "done") { it.state = "new"; it.parts = []; it.got = 0; } });
+      Object.keys(items).forEach(function (k) { var it = items[k]; if (it.state !== "done") { it.state = "new"; drop(it); } });
       wanted = []; current = null; $("r-pct").textContent = ""; drawList(true);
       mood("recv-img", "recv-cat", "sad"); $("recv-title").textContent = "The transfer stopped.";
       status("The connection kept failing, so the sender's page stopped sending." + (saved ? " The files you already saved are safe." : "") + " Open the link again to retry.");
