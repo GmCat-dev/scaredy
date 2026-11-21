@@ -6,13 +6,15 @@
      - Short link: like Direct, but the link is just /k7m2-x9pq; the key is handed over by our server (memory only) on join
    Files are encrypted here with AES-GCM. Frames: [type][payload] -> [12-byte IV][ciphertext].
      T_LIST: the file list {files:[{id,name,size,type}]}   T_DATA: [4-byte id][bytes]   T_DONE: [4-byte id]
+     T_DATA2 (v12): [4-byte id][8-byte offset][bytes], used when the receiver's "get" carries "from" (it can resume a file
+     where it stopped after a dropped connection; a piece at the wrong offset is never written)
    Server side: gmcat-scaredy/rooms.py. Look and words: blend of Pixel's and Claude's takes. */
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
   var ICE = [{ urls: "stun:stun.cloudflare.com:3478" }, { urls: "stun:stun.l.google.com:19302" }];
   var DC_CHUNK = 64 * 1024, RELAY_CHUNK = 1024 * 1024, CONNECT_TIMEOUT = 25000, FALLBACK_AFTER = 12000, STALL = 15000;
-  var T_LIST = 1, T_DATA = 2, T_DONE = 3;
+  var T_LIST = 1, T_DATA = 2, T_DONE = 3, T_DATA2 = 4, RECONNECTS = 6, RECONNECT_WAIT = 30000;
   var ART = { ghost: "/img/scaredy-ghost.png", peeking: "/img/scaredy-peeking.png", shy: "/img/scaredy-shy.png", sweat: "/img/scaredy-sweat.png",
               relieved: "/img/scaredy-relieved.png", thumbs: "/img/scaredy-thumbs.png", sad: "/img/scaredy-sad.png", eek: "/img/scaredy-eek.png" };
   var ALT = { ghost: "Ghost GmCat", peeking: "GmCat peeking", shy: "Shy GmCat", sweat: "GmCat shaking nervously", relieved: "Relieved GmCat",
@@ -52,6 +54,7 @@
   function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
   function u32(n) { var a = new Uint8Array(4); new DataView(a.buffer).setUint32(0, n); return a; }
   function readU32(a) { return new DataView(a.buffer, a.byteOffset, 4).getUint32(0); }
+  function off8(id, off) { var a = new Uint8Array(12), v = new DataView(a.buffer); v.setUint32(0, id); v.setUint32(4, Math.floor(off / 4294967296)); v.setUint32(8, off % 4294967296); return a; }
   function cat2(a, b) { var o = new Uint8Array(a.byteLength + b.byteLength); o.set(new Uint8Array(a), 0); o.set(new Uint8Array(b), a.byteLength); return o.buffer; }
 
   /* ---------- the route strip doubles as progress (Pixel's idea) ---------- */
@@ -408,7 +411,7 @@
       else {
         document.title = title; $("share-cat").classList.remove("faded"); if (!wakeLock) keepAwake();
         var busy = Object.keys(people).some(function (pid) { return people[pid].busy; });
-        if (hiddenAt && Date.now() - hiddenAt > 4000 && busy) $("keep-msg").textContent = "Welcome back! If your phone paused this page, anyone mid-download may need to open the link again.";
+        if (hiddenAt && Date.now() - hiddenAt > 4000 && busy) $("keep-msg").textContent = "Welcome back! If your phone paused this page, downloads carry on where they stopped once it's back.";
       }
     });
     window.addEventListener("pagehide", function () {
@@ -483,7 +486,7 @@
         var x = m.data;
         if (x.type === "answer" && p.pc) p.pc.setRemoteDescription(x.sdp).then(function () { (p.ice || []).forEach(function (c) { p.pc.addIceCandidate(c).catch(function () {}); }); p.ice = []; }).catch(function () {});
         else if (x.type === "ice" && p.pc && x.c) { if (p.pc.remoteDescription) p.pc.addIceCandidate(x.c).catch(function () {}); else (p.ice = p.ice || []).push(x.c); }
-        else if (x.type === "get" && viaRelay(p)) want(m.from, x.ids);
+        else if (x.type === "get" && viaRelay(p)) want(m.from, x.ids, x.from);
         else if (x.type === "got") gotOne(m.from);
         else if (x.type === "bye") { p.stopped = true; p.busy = false; setStatus(m.from, (gotLine(p) + " They left.").trim()); }
       });
@@ -495,9 +498,10 @@
     function gotOne(pid) { var p = people[pid]; if (!p) return; p.got += 1; if (!p.queue.length && !p.sending) { p.busy = false; setStatus(pid, gotLine(p)); } stripDone("share-strip"); }
 
     /* each person asks for files (all, or one by one); they're sent one after another */
-    function want(pid, ids) {
+    function want(pid, ids, from) {
       var p = people[pid]; if (!p) return;
-      (ids || []).forEach(function (id) { if (p.queue.indexOf(id) === -1) p.queue.push(id); });
+      if (from && typeof from === "object") { p.v12 = true; p.from = p.from || {}; }   // v12: they can resume a file where it stopped
+      (ids || []).forEach(function (id) { if (from && from[id] > 0) p.from[id] = +from[id]; if (p.queue.indexOf(id) === -1) p.queue.push(id); });
       pump(pid);
     }
     function pump(pid) {
@@ -506,7 +510,9 @@
       var f = fileById(id); if (!f) { pump(pid); return; }          // removed meanwhile: skip it
       p.sending = true; p.busy = true;
       var g = p.gen || 0, send = viaRelay(p) ? relaySendFile : directSendFile;
-      send(pid, f).then(function () { if ((p.gen || 0) !== g) return; p.sending = false; pump(pid); }).catch(function (e) {
+      var start = (p.from && p.from[id]) || 0; if (p.from) delete p.from[id];
+      if (!(start > 0 && start <= f.file.size && p.v12)) start = 0;
+      send(pid, f, start).then(function () { if ((p.gen || 0) !== g) return; p.sending = false; pump(pid); }).catch(function (e) {
         if ((p.gen || 0) !== g) return;                              // switched to the relay meanwhile: the receiver asks again (v7)
         p.sending = false; p.busy = false;
         if (p.relayBroken) { relayGaveUp(pid); return; }            // gave up on the relay: tell them, so they aren't left waiting (v7)
@@ -537,29 +543,49 @@
     }
 
     /* ---- direct (and short link): one WebRTC connection per person ---- */
-    function directOffer(pid) {
-      var p = people[pid], pc = new RTCPeerConnection({ iceServers: ICE }); p.pc = pc;
+    function directOffer(pid, waitMs) {
+      var p = people[pid], pc = new RTCPeerConnection({ iceServers: ICE }), opened = false, discT = null; p.pc = pc;
       var dc = pc.createDataChannel("files", { ordered: true }); dc.binaryType = "arraybuffer"; dc.bufferedAmountLowThreshold = 1024 * 1024; p.dc = dc;
       pc.onicecandidate = function (e) { if (e.candidate) signal(pid, { type: "ice", c: e.candidate.toJSON() }).catch(function () {}); };
-      var timer = setTimeout(function () { if (dc.readyState !== "open") fail(); }, fallback ? FALLBACK_AFTER : CONNECT_TIMEOUT);
+      var timer = setTimeout(function () { if (dc.readyState !== "open") fail(); }, waitMs || (fallback ? FALLBACK_AFTER : CONNECT_TIMEOUT));
       function fail() {
         if (p.stopped || p.relay || people[pid] !== p) return; clearTimeout(timer);
         if (fallback) { toRelay(pid); return; }
         p.stopped = true; p.blocked = true; drop(); setStatus(pid, "Couldn't sneak through their network.");
       }
-      function drop() { dc.onclose = null; pc.onconnectionstatechange = null; try { pc.close(); } catch (e) { /* ignore */ } }
+      function drop() { clearTimeout(discT); dc.onclose = null; pc.onconnectionstatechange = null; try { pc.close(); } catch (e) { /* ignore */ } }
       p.dropDirect = drop;
-      pc.onconnectionstatechange = function () { if (pc.connectionState === "failed") fail(); };
-      dc.onopen = function () { clearTimeout(timer); setStatus(pid, "Connected. Looking at your files…"); sendList(pid); };
+      /* v12: a connection that worked and then dropped (a phone switching between mobile data and Wi-Fi, say) gets a fresh
+         direct connection by itself; the receiver then asks to carry on where the file stopped. Only if that fails too does
+         the old path run (the relay, or "Send through the relay instead"). */
+      function lost() {
+        if (p.stopped || p.relay || people[pid] !== p || over || p.pc !== pc) return;
+        clearTimeout(timer); drop();
+        if ((p.reconnects || 0) < RECONNECTS) {
+          p.reconnects = (p.reconnects || 0) + 1; p.gen = (p.gen || 0) + 1; p.sending = false; p.busy = false; p.queue = []; p.frac = 0;
+          setStatus(pid, (gotLine(p) + " Their connection dropped (maybe their network changed). Reconnecting…").trim());
+          directOffer(pid, RECONNECT_WAIT); return;
+        }
+        if (fallback && !over) { toRelay(pid); return; }              // dropped partway: carry on over the relay (v7)
+        p.stopped = true; p.busy = false; p.blocked = !over; setStatus(pid, (gotLine(p) + " The direct connection dropped.").trim());
+      }
+      pc.onconnectionstatechange = function () {
+        var st = pc.connectionState;
+        if (st === "connected") { clearTimeout(discT); discT = null; }
+        else if (st === "failed") { if (opened) lost(); else fail(); }
+        else if (st === "disconnected" && opened && !discT) discT = setTimeout(function () { discT = null; if (pc.connectionState !== "connected") lost(); }, 7000);
+      };
+      dc.onopen = function () { clearTimeout(timer); opened = true; setStatus(pid, "Connected. Looking at your files…"); sendList(pid); };
       dc.onmessage = function (e) {
         if (typeof e.data !== "string") return;
         var m; try { m = JSON.parse(e.data); } catch (x) { return; }
-        if (m.type === "get") want(pid, m.ids); else if (m.type === "got") gotOne(pid);
+        if (m.type === "get") want(pid, m.ids, m.from); else if (m.type === "got") gotOne(pid);
       };
       dc.onclose = function () {
         if (p.stopped || p.relay || people[pid] !== p) return;
+        if (opened) { lost(); return; }
         clearTimeout(timer); drop();
-        if (fallback && !over) { toRelay(pid); return; }              // dropped partway: carry on over the relay (v7)
+        if (fallback && !over) { toRelay(pid); return; }
         p.stopped = true; p.busy = false; p.blocked = !over; setStatus(pid, (gotLine(p) + " The direct connection dropped.").trim());
       };
       pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () { return signal(pid, { type: "offer", sdp: pc.localDescription.toJSON() }); }).catch(fail);
@@ -575,8 +601,9 @@
         sendList(pid); setStatus(pid, "Connected through the encrypted relay (their network blocked Direct). Looking at your files…");
       }).catch(function (e) { if (people[pid] === p) { p.stopped = true; setStatus(pid, e.status === 410 ? "They left." : "Couldn't switch them to the relay. They can open the link again."); } });
     }
-    function directSendFile(pid, f) {
-      var p = people[pid], dc = p.dc, off = 0, idb = u32(f.id);
+    function piece(p, f, off, buf) { return p.v12 ? seal(key, T_DATA2, cat2(off8(f.id, off), buf)) : seal(key, T_DATA, cat2(u32(f.id), buf)); }
+    function directSendFile(pid, f, start) {
+      var p = people[pid], dc = p.dc, off = start || 0, idb = u32(f.id); if (off) progress(pid, f, off);   // v12: resumed partway
       return new Promise(function (resolve, reject) {
         (function next() {
           if (p.stopped || dc.readyState !== "open") { reject(new Error("The connection closed.")); return; }
@@ -587,7 +614,7 @@
           var end = Math.min(f.file.size, off + DC_CHUNK);
           f.file.slice(off, end).arrayBuffer()
             .catch(function () { var e = new Error("Couldn't read " + f.file.name + ". Try adding it again."); e.unreadable = true; throw e; })
-            .then(function (buf) { return seal(key, T_DATA, cat2(idb, buf)); }).then(function (b) {
+            .then(function (buf) { return piece(p, f, off, buf); }).then(function (b) {
               if (dc.readyState !== "open") { reject(new Error("The connection closed.")); return; }
               if (!sendOrFail(b)) return;
               off = end; progress(pid, f, off); next();
@@ -630,14 +657,14 @@
           }, function () { return retry(n, tries, new Error("The connection dropped while sending. They can open the link again.")); });
       }
     }
-    function relaySendFile(pid, f) {
-      var off = 0, idb = u32(f.id);
+    function relaySendFile(pid, f, start) {
+      var off = start || 0, idb = u32(f.id), p = people[pid]; if (off) progress(pid, f, off);
       function next() {
         if (people[pid].stopped) return Promise.reject(new Error("They left."));
         if (off >= f.file.size) return seal(key, T_DONE, idb).then(function (b) { return relayPut(pid, b); });
         var end = Math.min(f.file.size, off + RELAY_CHUNK);
         return f.file.slice(off, end).arrayBuffer().catch(function () { var e = new Error("Couldn't read " + f.file.name + ". Try adding it again."); e.unreadable = true; throw e; })
-          .then(function (buf) { return seal(key, T_DATA, cat2(idb, buf)); })
+          .then(function (buf) { return piece(p, f, off, buf); })
           .then(function (b) { return relayPut(pid, b); }).then(function () { off = end; progress(pid, f, off); return next(); });
       }
       return next();
@@ -654,11 +681,26 @@
     var pipe = null, pipeWorks = false;                               // v11: big files stream into a download (Pipe)
     Pipe.init().then(function (r) { pipe = r; });
     var PIPE_WAIT = 10000, PIPE_HOLD = 256 * 1024 * 1024;
-    function drop(it) { if (it.sink) { it.sink.abort(); it.sink = null; } it.parts = []; it.got = 0; }
+    function drop(it) { if (it.sink) { it.sink.abort(); it.sink = null; } it.parts = []; it.got = 0; it.resume = false; it.bad = false; }
     function begin(it) {                                              // first piece of a file
       drop(it); it.piped = false;
       if (pipe && it.meta.size >= Pipe.MIN) { it.sink = Pipe.sink(it.meta, function (s) { onPipe(it, s); }); it.since = Date.now(); }
     }
+    /* v12: keep the screen on while files come across (switching apps or locking the phone pauses the page) */
+    var wake = null, hiddenAt = 0;
+    function busyNow() { return !ended && (wanted.length > 0 || resumeIds.length > 0); }
+    function awake(on) {
+      if (on && !wake && navigator.wakeLock && document.visibilityState === "visible") {
+        wake = "asking";
+        navigator.wakeLock.request("screen").then(function (l) { if (!busyNow()) { l.release().catch(function () {}); wake = null; return; } wake = l; l.addEventListener("release", function () { if (wake === l) wake = null; }); }, function () { wake = null; });
+      } else if (!on && wake && wake !== "asking") { var l = wake; wake = null; l.release().catch(function () {}); }
+    }
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
+      if (busyNow()) { awake(true); if (hiddenAt && Date.now() - hiddenAt > 4000) hint("Welcome back. Your phone may have paused this while you were away; it carries on where it stopped."); }
+      hiddenAt = 0;
+    });
+    setInterval(function () { awake(busyNow()); }, 3000);
     function onPipe(it, s) {
       if (s === "started") { pipeWorks = true; if (/download|Allow/.test($("r-hint").textContent)) hint(""); return; }
       if (it.state !== "receiving" && it.state !== "queued") return;    // "cancel": stopped in the browser's downloads list
@@ -730,12 +772,12 @@
     }
     /* the sender's page went away (refresh?): half-received files start again when it's back */
     function resetPartial() {
-      Object.keys(items).forEach(function (k) { var it = items[k]; if (it.state === "receiving" || it.state === "queued") { it.state = "new"; drop(it); if (resumeIds.indexOf(+k) === -1) resumeIds.push(+k); } });
+      Object.keys(items).forEach(function (k) { var it = items[k]; if (it.state === "receiving" || it.state === "queued") { it.state = "new"; if (it.got > 0 && !it.bad) it.resume = true; else drop(it); if (resumeIds.indexOf(+k) === -1) resumeIds.push(+k); } });
       wanted = []; current = null; $("r-pct").textContent = ""; if (list.length) drawList(false);
     }
     function senderAway() {
       resetPartial(); mood("recv-img", "recv-cat", "peeking");
-      hint("The sender's page went away for a moment. Waiting a few seconds in case it comes back…");
+      hint("The connection dropped for a moment (a network change can do this). Reconnecting… files carry on where they stopped.");
     }
     function senderBack(e) {
       resetPartial();
@@ -760,9 +802,10 @@
     }
     function ask1(ids) {
       ids = ids.filter(function (id) { return items[id] && items[id].state === "new"; }); if (!ids.length) return;
-      ids.forEach(function (id) { items[id].state = "queued"; wanted.push(id); });
-      send({ type: "get", ids: ids });
-      mood("recv-img", "recv-cat", "sweat", "wobble"); $("recv-title").textContent = "Tiptoeing across…"; status("Receiving. Keep this page open.");
+      var from = {};                                                 // v12: carry on where each file stopped (0 = from the start)
+      ids.forEach(function (id) { var it = items[id]; it.state = "queued"; wanted.push(id); from[id] = it.resume ? it.got : 0; });
+      send({ type: "get", ids: ids, from: from });
+      mood("recv-img", "recv-cat", "sweat", "wobble"); $("recv-title").textContent = "Tiptoeing across…"; status("Receiving. Stay on this page until it's done: switching apps or locking the phone pauses it."); awake(true);
       if (!stallTimer) watchStall(); lastGot = Date.now(); drawList(false);
     }
     $("r-go").addEventListener("click", function () { ask1(list.map(function (m) { return m.id; })); });
@@ -770,6 +813,17 @@
       if (ended) return;                                               // v9: late pieces after a stop are ignored
       if (f.type === T_LIST) { onList(JSON.parse(dec.decode(f.data))); return; }
       var id = readU32(f.data), it = items[id]; if (!it) return;
+      if (f.type === T_DATA2) {                                       // v12: pieces carry their place in the file
+        if (it.state !== "queued" && it.state !== "receiving") return;
+        var v = new DataView(f.data.buffer, f.data.byteOffset + 4, 8), at = v.getUint32(0) * 4294967296 + v.getUint32(4);
+        if (it.state === "queued") {
+          if (at === 0) begin(it);                                      // from the start
+          else if (!(it.resume && at === it.got)) { it.bad = true; return; }   // not where we stopped: never write it
+          it.resume = false; it.state = "receiving";
+        } else if (at !== it.got) { it.bad = true; return; }
+        f = { type: T_DATA, data: f.data.subarray(8) };                 // [id][bytes], handled like an old-style piece below
+        f.data.set(u32(id), 0);
+      }
       if (f.type === T_DATA) {
         if (it.state !== "queued" && it.state !== "receiving") return;   // v9: leftovers of a file that was stopped
         if (it.state === "queued") begin(it);
@@ -784,7 +838,7 @@
       }
       if (f.type === T_DONE) {
         if (it.state !== "receiving" && it.state !== "queued") return;
-        if (it.got !== it.meta.size) {                                  // v9: never save a short or empty file as a success
+        if (it.got !== it.meta.size || it.bad) {                        // v9: never save a short or empty file as a success
           it.state = "new"; drop(it); current = null; wanted = wanted.filter(function (x) { return x !== id; });
           $("r-pct").textContent = ""; drawList(false); mood("recv-img", "recv-cat", "sad");
           hint(it.meta.name + " arrived incomplete, so it wasn't saved. Tap Receive to try again.");
@@ -801,7 +855,7 @@
         wanted = wanted.filter(function (x) { return x !== id; });
         drawList(false);
         if (!wanted.length) {
-          $("r-pct").textContent = ""; mood("recv-img", "recv-cat", "relieved"); $("recv-title").textContent = "Phew. You've got " + (saved === 1 ? "it" : "them") + ".";
+          awake(false); $("r-pct").textContent = ""; mood("recv-img", "recv-cat", "relieved"); $("recv-title").textContent = "Phew. You've got " + (saved === 1 ? "it" : "them") + ".";
           status("✓ Made it. Nothing left behind. Check your downloads." + (list.some(function (m) { return items[m.id] && items[m.id].state === "new"; }) ? " There's more you can receive below." : ""));
           setTimeout(function () { if (!wanted.length && !ended) mood("recv-img", "recv-cat", "thumbs"); }, 2500);
         }
@@ -841,7 +895,7 @@
       resetPartial();                                                 // a half-received file starts again over the relay (v7)
       if ($("r-file").hidden) { mood("recv-img", "recv-cat", "ghost"); $("recv-title").textContent = "Taking the encrypted shortcut."; }
       status("Direct was blocked, so this comes through the encrypted relay instead. Still locked, never stored.");
-      if (resumeIds.length) hint("The connection changed partway, so the file in progress starts again.");
+      if (resumeIds.length) hint("The connection changed partway. The file in progress carries on where it stopped.");
       relayGen += 1; relayGet(0, relayGen);
     }
     function fileSkipped(id) {                                         // v9: the sender's browser couldn't read this file
@@ -874,7 +928,7 @@
       });
     }
     function answer(sdp) {
-      if (pc) { var stale = pc; pc = null; try { stale.close(); } catch (x) { /* ignore */ } }
+      if (pc) { var stale = pc; pc = null; dc = null; try { stale.close(); } catch (x) { /* ignore */ } resetPartial(); }   // v12: a reconnect: carry on where it stopped
       var mine = pc = new RTCPeerConnection({ iceServers: ICE });
       pc.onicecandidate = function (e) { if (e.candidate) api("POST", room + "/send", { token: token, to: "sender", data: { type: "ice", c: e.candidate.toJSON() } }).catch(function () {}); };
       pc.onconnectionstatechange = function () { if (pc === mine && !everOpen && mine.connectionState === "failed" && !ended) blockedMsg(); };

@@ -23,6 +23,8 @@ This repository is published so anyone can check that Scaredy does what its page
 | Encryption (seal / unseal, the key in the link) | [`site/scaredy.js`](site/scaredy.js): `seal`, `unseal`, `importKey` |
 | Sending, receiving, the three modes | `site/scaredy.js`: `sender()`, `receiver()` |
 | Refresh safety (the copy kept in your own browser) | `site/scaredy.js`: `Keep` (IndexedDB, wiped on Stop sharing) |
+| Big files straight to the downloads folder (nothing piles up in memory) | `site/scaredy.js`: `Pipe` + [`site/sw.js`](site/sw.js) (a service worker that passes pieces through once, stores nothing) |
+| Carrying on after a dropped connection | `site/scaredy.js`: `lost()` (sender reconnects), `T_DATA2` pieces carry their place in the file, `resetPartial()` (receiver keeps what arrived) |
 | The service: signalling + relay, memory only | [`server/rooms.py`](server/rooms.py) (the API is listed at the top), `server/server.py` |
 | Limits (fair use, rate limits) | top of `server/rooms.py` and `server/server.py` |
 | Tests | `python3 server/test_server.py` |

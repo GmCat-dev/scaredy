@@ -79,9 +79,9 @@
         <li><b>Keep this page open until they have it.</b> Close it, lose your internet, or let your computer sleep, and the link vanishes. You'd need to make a new one.</li>
         <li><b>On a phone, keep the screen on and stay on this page.</b> Phones pause pages in the background, which stops the transfer. A computer works best for sending.</li>
         <li><b>They must download while you're online.</b> It's not "send now, grab it later". Agree on a time, or send the link when you're both around.</li>
-        <li><b>If the connection drops partway, they start again.</b> Nothing is kept halfway, anywhere.</li>
+        <li><b>If the connection drops partway, it carries on.</b> Scaredy reconnects by itself and the file picks up where it stopped, as long as both pages stay open. A half-finished file is never saved as if it were complete.</li>
         <li><b>Refreshing is fine.</b> Your files and your link come back by themselves, and anyone receiving picks up again. Closing the page is different: the link vanishes, and the copy this browser kept of your files is wiped automatically the next time Scaredy GmCat is opened in this browser, once at least half an hour has passed (your own files on your device aren't touched).</li>
-        <li><b>Very big files</b> (several GB) may be too much for the other person's browser, especially on a phone.</li>
+        <li><b>Very big files</b> (several GB) go straight into the other person's downloads as they arrive. On an iPhone or iPad they may still be too much for the browser.</li>
         <li><b>The secret is in the link.</b> Your file is locked with a key that's part of the link itself (the bit after the "#"). Browsers never send that part to any server, so not even our relay can open your file. It also means anyone with the whole link can get the file while you're sharing, so send it only to the person it's for. (A Short link has no room for the key, so it passes through our server while you connect; we never save it.)</li>
       </ul>
     </details>
@@ -134,7 +134,7 @@
       <h2>How this works</h2>
       <ul>
         <li>The file comes straight from the sender's open page, or through our encrypted relay if they chose it. It isn't stored anywhere.</li>
-        <li>Keep this page open until it finishes. If the connection drops, open the link again to start over.</li>
+        <li>Stay on this page until it finishes; your screen stays on meanwhile. If the connection drops (say your phone switches between mobile data and Wi-Fi), it reconnects by itself and carries on where it stopped.</li>
         <li>If the sender has closed their page, the link won't work any more. Ask them for a new one.</li>
         <li>It's locked with a key that's part of the link, so only someone with this exact link can open it.</li>
         <li>Only open files from people you know and trust.</li>
@@ -171,7 +171,7 @@
     </table></div>
     <div class="why-grid two">
       <div><b>👍 Why people pick Scaredy</b><span>Nothing to leak later, because nothing was kept. Three ways across, so it works even on networks that block direct connections. Short links you can read out loud. Add or remove files while you share, see each person's progress, and refresh without losing anything.</span></div>
-      <div><b>👎 When something else is better</b><span>If the other person can't download while you're online, you need a service that stores the file. <a href="https://drop.gmcat.io/">GmCat Drop</a> keeps it for a set time and then deletes it. Very big files can also be hard on phones.</span></div>
+      <div><b>👎 When something else is better</b><span>If the other person can't download while you're online, you need a service that stores the file. <a href="https://drop.gmcat.io/">GmCat Drop</a> keeps it for a set time and then deletes it. Very big files can also be hard on iPhones.</span></div>
     </div>
     <p class="small">Other browser-to-browser tools also skip the upload. Scaredy's extras are the encrypted relay for stubborn networks, short links, a live file list and refresh-safe sharing, all free and open source.</p>
   </section>
@@ -183,7 +183,7 @@
     <details><summary>Can I send to several people?</summary><p>Yes. Send the same link to each of them. Each person gets their own copy while your page is open, and you can watch each one's progress.</p></details>
     <details><summary>Can I send several files, or add one later?</summary><p>Yes. Pick as many as you like. While the link is ready you can add more files or remove some, and anyone with the link sees the list change straight away.</p></details>
     <details><summary>Which option should I pick?</summary><p>Direct is the most private. If it can't connect, or you'd rather not show your internet address, use Encrypted relay. Pick Short link when you need a link that's easy to type or say out loud; the trade-off is that the secret key passes through our server while you connect.</p></details>
-    <details><summary>What if I refresh the page?</summary><p>Nothing is lost. While you share, the page keeps a copy of your files in your own browser (it never leaves your device), so after a refresh your files and your link come straight back, and anyone receiving reconnects by themselves. A file that was halfway across starts again. The copy is wiped when you press Stop sharing. If you close the page instead, the link vanishes after a few seconds, and the copy is wiped automatically the next time Scaredy GmCat is opened in this browser, once at least half an hour has passed.</p></details>
+    <details><summary>What if I refresh the page?</summary><p>Nothing is lost. While you share, the page keeps a copy of your files in your own browser (it never leaves your device), so after a refresh your files and your link come straight back, and anyone receiving reconnects by themselves. A file that was halfway across carries on where it stopped. The copy is wiped when you press Stop sharing. If you close the page instead, the link vanishes after a few seconds, and the copy is wiped automatically the next time Scaredy GmCat is opened in this browser, once at least half an hour has passed.</p></details>
     <details><summary>Is there a size limit?</summary><p>Not for Direct. The relay has a fair-use limit of 6 GB per link. In practice the other person's browser decides how big is too big; several GB can be a stretch on phones.</p></details>
     <details><summary>Do I need an account?</summary><p>No. Nobody signs up, nobody signs in.</p></details>
     <details><summary>Can I check the code?</summary><p>Yes. The code behind Scaredy GmCat is public on <a href="https://github.com/GmCat-dev/scaredy">GitHub</a>, so anyone can check how files are locked, what our server does (and doesn't) keep, and run it themselves.</p></details>
