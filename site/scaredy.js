@@ -14,7 +14,7 @@
   var $ = function (id) { return document.getElementById(id); };
   var ICE = [{ urls: "stun:stun.cloudflare.com:3478" }, { urls: "stun:stun.l.google.com:19302" }];
   var DC_CHUNK = 64 * 1024, RELAY_CHUNK = 1024 * 1024, CONNECT_TIMEOUT = 25000, FALLBACK_AFTER = 12000, STALL = 15000;
-  var T_LIST = 1, T_DATA = 2, T_DONE = 3, T_DATA2 = 4, RECONNECTS = 6, RECONNECT_WAIT = 30000, SPARE_WAIT = 20000;
+  var T_LIST = 1, T_DATA = 2, T_DONE = 3, T_DATA2 = 4, RECONNECTS = 6, RECONNECT_WAIT = 15000, SPARE_WAIT = 20000;
   var ART = { ghost: "/img/scaredy-ghost.png", peeking: "/img/scaredy-peeking.png", shy: "/img/scaredy-shy.png", sweat: "/img/scaredy-sweat.png",
               relieved: "/img/scaredy-relieved.png", thumbs: "/img/scaredy-thumbs.png", sad: "/img/scaredy-sad.png", eek: "/img/scaredy-eek.png" };
   var ALT = { ghost: "Ghost GmCat", peeking: "GmCat peeking", shy: "Shy GmCat", sweat: "GmCat shaking nervously", relieved: "Relieved GmCat",
@@ -167,12 +167,15 @@
       function finish(now) { open = Math.max(0, open - 1); if (now) frame.remove(); else setTimeout(function () { frame.remove(); }, 60000); }
       ch.port1.onmessage = function (m) {
         var d = m.data || {};
-        if (d.t === "started") { started = true; waiting.forEach(post); waiting = []; held = 0; onstate("started"); }
+        if (d.t === "ready") openFrame();                             // v14: the worker knows about this download now
+        else if (d.t === "started") { started = true; waiting.forEach(post); waiting = []; held = 0; onstate("started"); }
         else if (d.t === "cancel" && !closed) { closed = true; finish(true); onstate("cancel"); }
       };
       open += 1; ping();
       reg.active.postMessage({ t: "open", id: id, name: meta.name, size: meta.size }, [ch.port2]);
-      frame.src = "/__dl/" + id + "/" + encodeURIComponent(meta.name); document.body.appendChild(frame);
+      var framed = false;
+      function openFrame() { if (framed || closed) return; framed = true; frame.src = "/__dl/" + id + "/" + encodeURIComponent(meta.name); document.body.appendChild(frame); }
+      setTimeout(openFrame, 3000);                                    // a worker from before v14 never says "ready"
       return {
         write: function (u8) { if (closed) return; buf.push(u8); bufLen += u8.byteLength; if (bufLen >= BATCH) flush(); },
         end: function () { if (closed) return; closed = true; flush(); queue("end"); finish(false); },
@@ -588,7 +591,7 @@
         if (spare) {                                                  // v13: the spare works: move over to it
           if (!(p.spare && p.spare.pc === pc) || p.stopped || over || people[pid] !== p) { drop(); return; }
           p.spare = null;
-          if (p.relay) { p.relay = false; p.fellBack = false; p.n2 = 0; p.chain = null; p.relayBroken = null; }
+          if (p.relay) { p.relay = false; p.fellBack = false; p.chain = null; p.relayBroken = null; p.rs = (p.rs || 0) + 1; }   // n2 keeps counting (v14)
           else if (p.dropDirect) p.dropDirect();
           p.pc = pc; p.dc = dc; p.cid = cid; p.dropDirect = drop; p.ice = [];
           p.gen = (p.gen || 0) + 1; p.sending = false; p.busy = false; p.queue = []; p.frac = 0; p.blocked = false;
@@ -625,10 +628,13 @@
     function toRelay(pid) {
       var p = people[pid]; if (!p || p.relay || over) return;
       if (p.dropDirect) p.dropDirect();
-      p.relay = true; p.fellBack = true; p.stopped = false; p.blocked = false; p.n2 = 0; p.chain = null; p.dc = null; p.pc = null;
+      p.relay = true; p.fellBack = true; p.stopped = false; p.blocked = false; p.chain = null; p.relayBroken = null; p.rs = (p.rs || 0) + 1; p.dc = null; p.pc = null;
+      /* v14: relay piece numbers keep counting up for this person instead of restarting at 0. Pieces left on our server
+         from an earlier relay stretch (before a move to Direct) then have lower numbers: asking for the new start clears
+         them, so they can never be handed over in place of a new piece or keep the relay's waiting room full. */
       p.gen = (p.gen || 0) + 1; p.sending = false; p.busy = false; p.queue = []; p.frac = 0;   // a half-sent file restarts over the relay (v7)
       setStatus(pid, "Their network blocked Direct, so switching them to the encrypted relay…");
-      signal(pid, { type: "relay" }).then(function () {
+      signal(pid, { type: "relay", n: p.n2 || 0 }).then(function () {
         sendList(pid); setStatus(pid, "Connected through the encrypted relay (their network blocked Direct). Looking at your files…");
       }).catch(function (e) { if (people[pid] === p) { p.stopped = true; setStatus(pid, e.status === 410 ? "They left." : "Couldn't switch them to the relay. They can open the link again."); } });
     }
@@ -659,9 +665,12 @@
       var p = people[pid]; if (!p) return Promise.reject(new Error("gone"));
       // v6: a piece that fails on the way (dropped connection, busy server) is sent again with the SAME number, so the
       // receiver never waits for a number that was skipped. If it still can't get through, this person's relay stops.
+      var rs = p.rs || 0;                                            // v14: this relay stretch; a piece from an older one stops quietly
+      function moved() { var e = new Error("moved"); e.moved = true; return e; }
       p.chain = (p.chain || Promise.resolve()).catch(function () {}).then(function () {
+        if ((p.rs || 0) !== rs) throw moved();
         if (p.relayBroken) throw p.relayBroken;
-        var n = p.n2++; return put(n, 0).catch(function (e) { p.relayBroken = e; throw e; });
+        var n = p.n2++; return put(n, 0).catch(function (e) { if (!e.moved && (p.rs || 0) === rs) p.relayBroken = e; throw e; });
       });
       return p.chain;
       var busySince = 0;
@@ -675,6 +684,7 @@
         return wait(Math.max(1, Math.min(60, +d.retry || 5)) * 1000 + Math.random() * 500).then(function () { return put(n, tries); });
       }
       function put(n, tries) {
+        if ((p.rs || 0) !== rs) return Promise.reject(moved());        // moved to Direct or a new relay stretch meanwhile
         return fetch("/api/" + room + "/relay/" + pid + "/" + n, { method: "POST", headers: { "X-Scaredy-Token": token, "X-Scaredy-Epoch": String(p.epoch || 0), "Content-Type": "application/octet-stream" }, body: body })
           .then(function (r) {
             if (r.ok) { busySince = 0; return; }
@@ -731,8 +741,12 @@
     function drop(it) { if (it.sink) { it.sink.abort(); it.sink = null; } it.parts = []; it.got = 0; it.resume = false; it.bad = false; }
     function begin(it) {                                              // first piece of a file
       drop(it); it.piped = false;
-      if (pipe && it.meta.size >= Pipe.MIN) { it.sink = Pipe.sink(it.meta, function (s) { onPipe(it, s); }); it.since = Date.now(); }
+      if (pipe && it.meta.size >= Pipe.MIN) {
+        var sk = it.sink = Pipe.sink(it.meta, function (s) { onPipe(it, s); }); it.since = Date.now();
+        setTimeout(function () { if (it.sink === sk && it.state === "receiving") waitingPipe(it); }, PIPE_WAIT + 200);   // v14: check even if no piece comes
+      }
     }
+    function toMemory(it) { it.parts = it.sink.take(); it.sink = null; }   // the download never started: what's waiting is the whole file so far
     /* v12: keep the screen on while files come across (switching apps or locking the phone pauses the page) */
     var wake = null, hiddenAt = 0;
     function busyNow() { return !ended && (wanted.length > 0 || resumeIds.length > 0); }
@@ -760,7 +774,7 @@
       if (!it.sink || it.sink.started()) return;
       var t = Date.now() - it.since;
       if (!pipeWorks && t > PIPE_WAIT) {                              // never started in this browser: keep it in memory the old way
-        it.parts = it.sink.take(); it.sink = null; pipe = null; return;
+        toMemory(it); pipe = null; return;
       }
       if (t > PIPE_WAIT) hint("Waiting for your browser to start the download. If it asks about downloading several files, tap Allow.");
       if (it.sink.held() > PIPE_HOLD) {                               // stop before the phone's memory fills up
@@ -893,6 +907,7 @@
           if (!wanted.length) { $("recv-title").textContent = "That one didn't arrive whole."; status("Nothing incomplete was saved. Tap Receive to try again."); }
           return;
         }
+        if (it.sink && !it.sink.started()) toMemory(it);                  // v14: never "Phew" for a download the browser never started: save it the old way
         if (it.sink) { it.sink.end(); it.sink = null; it.piped = true; it.state = "done"; current = null; saved += 1; }   // v11: it's already in the downloads
         else {
           var blob = new Blob(it.parts, { type: it.meta.type || "application/octet-stream" }); it.parts = [];
@@ -936,7 +951,7 @@
       mood("recv-img", "recv-cat", "eek"); $("recv-title").textContent = "Eek.";
       status(canFallback ? "Direct is blocked here. Switching to the encrypted relay…" : "Couldn't sneak through. Your network or the sender's blocks direct connections. Ask the sender to tap \u201cSend through the relay instead\u201d next to you on their page. Keep this page open.");
     }
-    function toRelay() {
+    function toRelay(start) {
       if (mode === "relay" || ended) return;
       mode = "relay";
       if (pc) { var old = pc; pc = null; dc = null; try { old.close(); } catch (x) { /* ignore */ } }
@@ -944,7 +959,7 @@
       if ($("r-file").hidden) { mood("recv-img", "recv-cat", "ghost"); $("recv-title").textContent = "Taking the encrypted shortcut."; }
       status("Direct was blocked, so this comes through the encrypted relay instead. Still locked, never stored.");
       if (resumeIds.length) hint("The connection changed partway. The file in progress carries on where it stopped.");
-      relayGen += 1; relayGet(0, relayGen);
+      relayGen += 1; relayGet(start > 0 && start % 1 === 0 ? start : 0, relayGen);   // v14: where this relay stretch starts
     }
     function fileSkipped(id) {                                         // v9: the sender's browser couldn't read this file
       var it = items[id]; if (!it || it.state === "done" || ended) return;
@@ -967,7 +982,7 @@
     function onSignal(d) {
       (d.msgs || []).forEach(function (m) {
         var x = m.data || {};
-        if (x.type === "relay") toRelay();
+        if (x.type === "relay") toRelay(x.n);
         else if (x.type === "failed") senderGaveUp();
         else if (x.type === "skip") fileSkipped(+x.id);
         else if (x.type === "again") senderBack(x.epoch);
