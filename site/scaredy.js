@@ -807,15 +807,24 @@
       if (mode !== "relay" && dc && dc.readyState === "open") dc.send(JSON.stringify(obj));
       else api("POST", room + "/send", { token: token, to: "sender", data: obj }).catch(function () {});
     }
+    /* v18: live download speed under the file name (average over the last ~3 s; stalls show as 0 within a second or two) */
+    var spd = [];
+    function speedNow() {
+      var now = Date.now(); spd.push([now, rx]); while (spd.length > 2 && now - spd[1][0] >= 3000) spd.shift();
+      var dt = (now - spd[0][0]) / 1000; return dt < 0.6 ? -1 : (rx - spd[0][1]) / dt;
+    }
+    function speedText(b) { return b < 1048576 ? Math.round(b / 1024) + " KB/s" : (b / 1048576).toFixed(1) + " MB/s"; }
+    setInterval(function () { var it = current != null && items[current]; if (it && it.state === "receiving" && Date.now() - lastGot > 900) drawList(false); }, 1000);
     function drawList(frozen) {
       var ul = $("r-list"); ul.innerHTML = "";
+      var sp = list.some(function (m) { return items[m.id] && items[m.id].state === "receiving"; }) ? speedNow() : (spd = [], -1);
       list.forEach(function (m) {
         var it = items[m.id] || (items[m.id] = { meta: m, parts: [], got: 0, state: "new" });
         it.meta = m;
         var li = document.createElement("li");
         li.innerHTML = '<span class="ico"></span><span class="fn"><b></b><small></small></span><span class="act"></span>';
         li.querySelector(".ico").textContent = icon(m.name); li.querySelector("b").textContent = m.name;
-        li.querySelector("small").textContent = size(m.size) + (it.state === "receiving" ? " · " + Math.round(it.got / Math.max(1, m.size) * 100) + "%" : it.state === "queued" ? " · waiting" : it.state === "done" ? (it.piped ? " · saved to downloads" : " · saved") : "") + (it.skipped && it.state === "new" ? " · the sender's page couldn't read it" : "");
+        li.querySelector("small").textContent = size(m.size) + (it.state === "receiving" ? " · " + Math.round(it.got / Math.max(1, m.size) * 100) + "%" + (sp >= 0 ? " · " + speedText(sp) : "") : it.state === "queued" ? " · waiting" : it.state === "done" ? (it.piped ? " · saved to downloads" : " · saved") : "") + (it.skipped && it.state === "new" ? " · the sender's page couldn't read it" : "");
         var act = li.querySelector(".act");
         if (it.state === "done" && it.piped) act.textContent = "✓";
         else if (it.state === "done") { var a = document.createElement("a"); a.className = "btn small-btn"; a.href = it.url; a.download = m.name; a.textContent = "Save again"; act.appendChild(a); }
