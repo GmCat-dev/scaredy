@@ -345,6 +345,8 @@
         room = d.room; token = d.token; openShare();
       }).catch(function (e) { $("start").disabled = false; err(e.message); });
     });
+    (function () { var d = document.querySelector("details.qr"); if (d) d.addEventListener("toggle", function () {
+      if (!d.open) return; d.querySelector("summary").classList.remove("nudge"); try { localStorage.setItem("scaredy-qr-seen", "1"); } catch (e) {} }); })();
     function openShare() {
       sharing = true; saveSess();
       var link = mode === "short" ? location.origin + "/" + room.slice(0, 4) + "-" + room.slice(4) : location.origin + "/#" + room + "." + keyB64;
@@ -353,7 +355,9 @@
         mode === "short" ? "Short link: easy to type or say. The key passes through our server while you connect (never saved). If someone's network blocks it, you can choose to send theirs through our relay." :
         (fallback ? "Direct: straight between your browsers. If someone's network blocks it, they switch to the encrypted relay by themselves." : "Direct: straight between your browsers. If someone's network blocks it, you can switch them to the encrypted relay.");
       try { dropQR.draw($("qr"), link); } catch (e) { /* QR is optional */ }
-      var qs = document.querySelector("details.qr summary"); if (qs && !qs.parentNode.open) { qs.classList.remove("nudge"); void qs.offsetWidth; qs.classList.add("nudge"); }
+      var qs = document.querySelector("details.qr summary"), qseen = false;   /* v16: keep nudging until the QR code has been opened once (remembered on this device) */
+      try { qseen = localStorage.getItem("scaredy-qr-seen") === "1"; } catch (e) {}
+      if (qs && !qs.parentNode.open && !qseen) { qs.classList.remove("nudge"); void qs.offsetWidth; qs.classList.add("nudge"); }
       strip("share-strip", null, mode === "relay");
       $("send").hidden = true; $("why").hidden = true; $("compare").hidden = true; $("share").hidden = false; window.scrollTo(0, 0);
       shareChanged(); keepAwake();
