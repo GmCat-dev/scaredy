@@ -814,6 +814,14 @@
       var dt = (now - spd[0][0]) / 1000; return dt < 0.6 ? -1 : (rx - spd[0][1]) / dt;
     }
     function speedText(b) { return b < 1048576 ? Math.round(b / 1024) + " KB/s" : (b / 1048576).toFixed(1) + " MB/s"; }
+    function leftText(secs) {   /* v19: rough time left from the same 3 s average */
+      if (!isFinite(secs) || secs < 0) return "";
+      if (secs < 10) return "a few sec left";
+      if (Math.round(secs / 5) * 5 < 60) return "about " + Math.round(secs / 5) * 5 + " sec left";
+      if (Math.round(secs / 60) < 60) return "about " + Math.max(1, Math.round(secs / 60)) + " min left";
+      var h = Math.floor(secs / 3600), m = Math.round((secs - h * 3600) / 60); if (m === 60) { h++; m = 0; }
+      return "about " + h + " hr" + (m ? " " + m + " min" : "") + " left";
+    }
     setInterval(function () { var it = current != null && items[current]; if (it && it.state === "receiving" && Date.now() - lastGot > 900) drawList(false); }, 1000);
     function drawList(frozen) {
       var ul = $("r-list"); ul.innerHTML = "";
@@ -824,7 +832,7 @@
         var li = document.createElement("li");
         li.innerHTML = '<span class="ico"></span><span class="fn"><b></b><small></small></span><span class="act"></span>';
         li.querySelector(".ico").textContent = icon(m.name); li.querySelector("b").textContent = m.name;
-        li.querySelector("small").textContent = size(m.size) + (it.state === "receiving" ? " · " + Math.round(it.got / Math.max(1, m.size) * 100) + "%" + (sp >= 0 ? " · " + speedText(sp) : "") : it.state === "queued" ? " · waiting" : it.state === "done" ? (it.piped ? " · saved to downloads" : " · saved") : "") + (it.skipped && it.state === "new" ? " · the sender's page couldn't read it" : "");
+        li.querySelector("small").textContent = size(m.size) + (it.state === "receiving" ? " · " + Math.round(it.got / Math.max(1, m.size) * 100) + "%" + (sp >= 0 ? " · " + speedText(sp).replace(" ", "\u00a0") + (sp > 0 && spd.length > 1 && spd[spd.length - 1][0] - spd[0][0] >= 2000 ? (function (t) { return t ? " · " + t.replace(/ /g, "\u00a0") : ""; })(leftText((m.size - it.got) / sp)) : "") : "") : it.state === "queued" ? " · waiting" : it.state === "done" ? (it.piped ? " · saved to downloads" : " · saved") : "") + (it.skipped && it.state === "new" ? " · the sender's page couldn't read it" : "");
         var act = li.querySelector(".act");
         if (it.state === "done" && it.piped) act.textContent = "✓";
         else if (it.state === "done") { var a = document.createElement("a"); a.className = "btn small-btn"; a.href = it.url; a.download = m.name; a.textContent = "Save again"; act.appendChild(a); }
