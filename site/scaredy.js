@@ -51,6 +51,15 @@
     var x = (String(name).split(".").pop() || "").toLowerCase();
     return /^(png|jpe?g|gif|webp|avif|heic)$/.test(x) ? "🖼️" : /^(mp4|mov|webm|m4v|mkv)$/.test(x) ? "🎬" : /^(mp3|wav|m4a|ogg|flac)$/.test(x) ? "🎵" : /^(zip|7z|rar|gz|tar)$/.test(x) ? "🗜️" : /^pdf$/.test(x) ? "📕" : "📄";
   }
+  function speedText(b) { return b < 1048576 ? Math.round(b / 1024) + " KB/s" : (b / 1048576).toFixed(1) + " MB/s"; }
+  function leftText(secs) {   /* v19: rough time left (v20: shared by sender + receiver) */
+    if (!isFinite(secs) || secs < 0) return "";
+    if (secs < 10) return "a few sec left";
+    if (Math.round(secs / 5) * 5 < 60) return "about " + Math.round(secs / 5) * 5 + " sec left";
+    if (Math.round(secs / 60) < 60) return "about " + Math.max(1, Math.round(secs / 60)) + " min left";
+    var h = Math.floor(secs / 3600), m = Math.round((secs - h * 3600) / 60); if (m === 60) { h++; m = 0; }
+    return "about " + h + " hr" + (m ? " " + m + " min" : "") + " left";
+  }
   function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
   function u32(n) { var a = new Uint8Array(4); new DataView(a.buffer).setUint32(0, n); return a; }
   function readU32(a) { return new DataView(a.buffer, a.byteOffset, 4).getUint32(0); }
@@ -547,11 +556,34 @@
       signal(pid, { type: "failed" }).catch(function () {});
       setStatus(pid, (gotLine(p) + " The connection kept failing, so this transfer stopped. They can open the link again to retry.").trim());
     }
+    /* v20: live upload speed + rough time left for each person (same 3 s average as the receiver). On Direct, bytes still
+       waiting in this browser's send queue (up to 4 MB) don't count yet, so the numbers match what they're receiving. */
+    function outBytes(p) { return Math.max(0, (p.sent || 0) - (!viaRelay(p) && p.dc && p.dc.readyState === "open" ? p.dc.bufferedAmount : 0)); }
+    function sendRate(p) {
+      var now = Date.now(), b = outBytes(p), s = p.spd || (p.spd = []); s.push([now, b]);
+      while (s.length > 2 && now - s[1][0] >= 3000) s.shift();
+      var dt = (now - s[0][0]) / 1000; return dt < 0.6 ? -1 : Math.max(0, (b - s[0][1]) / dt);
+    }
+    function progressLine(pid) {
+      var p = people[pid], f = p && p.spdF; if (!f) return;
+      var sp = sendRate(p), s = p.spd, t = sp > 0 && s.length > 1 && s[s.length - 1][0] - s[0][0] >= 2000 ? leftText((f.file.size - outBytes(p)) / sp) : "";
+      setStatus(pid, "Tiptoeing across… " + f.file.name + " · " + Math.round(p.frac * 100) + "%" +
+        (sp >= 0 ? " · " + speedText(sp).replace(" ", "\u00a0") + (t ? " · " + t.replace(/ /g, "\u00a0") : "") : ""));
+    }
     function progress(pid, f, sent) {
-      var p = people[pid]; p.frac = f.file.size ? sent / f.file.size : 1;
-      if (!p.tick || Date.now() - p.tick > 250 || sent >= f.file.size) { p.tick = Date.now(); setStatus(pid, "Tiptoeing across… " + f.file.name + " · " + Math.round(p.frac * 100) + "%"); }
+      var p = people[pid]; if (!p) return;
+      if (p.spdF !== f || sent < (p.sent || 0)) { p.spdF = f; p.spd = []; }   // a new file or a restart: fresh average
+      p.sent = sent; p.frac = f.file.size ? sent / f.file.size : 1;
+      if (!p.tick || Date.now() - p.tick > 250 || sent >= f.file.size) { p.tick = Date.now(); progressLine(pid); }
       strip("share-strip", p.frac, viaRelay(p));
     }
+    // a stall: nothing moves, so progress() isn't called; refresh once a second so the speed drops toward 0 and the time hides
+    setInterval(function () {
+      Object.keys(people).forEach(function (pid) {
+        var p = people[pid];
+        if (p && p.spdF && p.busy && !p.stopped && (p.sent || 0) < p.spdF.file.size && /^Tiptoeing across/.test(p.status || "") && Date.now() - (p.tick || 0) > 900) { p.tick = Date.now(); progressLine(pid); }
+      });
+    }, 1000);
 
     /* ---- direct (and short link): one WebRTC connection per person ---- */
     /* spare (v13): a second connection opened while the first one (or the relay) keeps going: "make before break". If it
@@ -812,15 +844,6 @@
     function speedNow() {
       var now = Date.now(); spd.push([now, rx]); while (spd.length > 2 && now - spd[1][0] >= 3000) spd.shift();
       var dt = (now - spd[0][0]) / 1000; return dt < 0.6 ? -1 : (rx - spd[0][1]) / dt;
-    }
-    function speedText(b) { return b < 1048576 ? Math.round(b / 1024) + " KB/s" : (b / 1048576).toFixed(1) + " MB/s"; }
-    function leftText(secs) {   /* v19: rough time left from the same 3 s average */
-      if (!isFinite(secs) || secs < 0) return "";
-      if (secs < 10) return "a few sec left";
-      if (Math.round(secs / 5) * 5 < 60) return "about " + Math.round(secs / 5) * 5 + " sec left";
-      if (Math.round(secs / 60) < 60) return "about " + Math.max(1, Math.round(secs / 60)) + " min left";
-      var h = Math.floor(secs / 3600), m = Math.round((secs - h * 3600) / 60); if (m === 60) { h++; m = 0; }
-      return "about " + h + " hr" + (m ? " " + m + " min" : "") + " left";
     }
     setInterval(function () { var it = current != null && items[current]; if (it && it.state === "receiving" && Date.now() - lastGot > 900) drawList(false); }, 1000);
     function drawList(frozen) {
